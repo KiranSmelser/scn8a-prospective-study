@@ -7,12 +7,12 @@ suppressPackageStartupMessages({
 })
 
 SEIZURE_TYPE_COLORS <- c(
-  `Tonic-clonic` = "#71D0F5FF",  
-  `Focal`        = "#FD8CC1FF",  
-  `Tonic`        = "#FED439FF",  
-  `Myoclonic`    = "#FD7446FF",  
-  `Absence`      = "#C80813FF",  
-  `Spasms`       = "#197EC0FF",  
+  `Tonic-clonic` = "#5698a3",  
+  `Focal`        = "#ffde76",  
+  `Tonic`        = "#67771a",  
+  `Myoclonic`    = "#0076c0",  
+  `Absence`      = "#e37c1d",  
+  `Spasms`       = "#7a5072",  
   `Other`        = "#B0B0B0"  
 )
 
