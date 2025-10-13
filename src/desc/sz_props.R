@@ -1,7 +1,4 @@
-## Seizure type proportions over time (area plot)
-## - Reads `data/events.csv`
-## - Aggregates by month and seizure type at the patient level
-## - Plots the monthly distribution (proportions) as a stacked area chart
+# Seizure type proportions over time (area plot)
 
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -9,7 +6,17 @@ suppressPackageStartupMessages({
   library(scales)
 })
 
-# Map raw seizure_type strings into broad categories comparable to the example
+SEIZURE_TYPE_COLORS <- c(
+  `Tonic-clonic` = "#71D0F5FF",  
+  `Focal`        = "#FD8CC1FF",  
+  `Tonic`        = "#FED439FF",  
+  `Myoclonic`    = "#FD7446FF",  
+  `Absence`      = "#C80813FF",  
+  `Spasms`       = "#197EC0FF",  
+  `Other`        = "#B0B0B0"  
+)
+
+# Map raw seizure_type strings
 map_seizure_type <- function(x) {
   s <- tolower(trimws(x))
   s <- gsub("_", " ", s)
@@ -28,16 +35,6 @@ map_seizure_type <- function(x) {
   )
 }
 
-SEIZURE_TYPE_COLORS <- c(
-  `Tonic-clonic` = "#71D0F5FF",  
-  `Focal`        = "#FD8CC1FF",  
-  `Tonic`        = "#FED439FF",  
-  `Myoclonic`    = "#FD7446FF",  
-  `Absence`      = "#C80813FF",  
-  `Spasms`       = "#197EC0FF",  
-  `Other`        = "#B0B0B0"  
-)
-
 # Read events
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   dplyr::filter(tolower(.data$type) == "seizure") %>%
@@ -55,21 +52,23 @@ monthly_counts <- events %>%
   dplyr::distinct(.data$patient_id, .data$month, .data$seizure_group) %>%
   dplyr::count(.data$month, .data$seizure_group, name = "n")
 
-# Order seizure groups for a tidy legend (similar to example figure)
+# Order seizure groups
 group_levels <- c("Tonic-clonic", "Focal", "Other", "Tonic", "Myoclonic", "Absence", "Spasms")
 monthly_counts <- monthly_counts %>%
   dplyr::mutate(seizure_group = factor(.data$seizure_group, levels = group_levels)) %>%
   dplyr::arrange(.data$month, .data$seizure_group)
 
+# Compute total number of patients per month
 patients_total <- monthly_counts %>%
   group_by(month) %>%
   summarise(total = sum(n))
 
+# Compute proportion of each seizure type per month
 props_df <- left_join(monthly_counts, patients_total, by = "month") %>%
   mutate(prop = n / total) %>%
   filter(month >= "2025-01-01" & month <= "2025-10-01")
 
-# Area plot: position = "fill" normalizes per-month to proportions (0–1)
+# Plot
 p_sz_props <- ggplot(props_df, aes(x = month, y = prop, fill = seizure_group)) +
   geom_area(stat = "smooth", method = "loess", position = "identity") +
   geom_line(stat = "smooth", method = "loess", formula = y ~ x, se = FALSE, linetype = 1,
@@ -83,4 +82,3 @@ p_sz_props <- ggplot(props_df, aes(x = month, y = prop, fill = seizure_group)) +
   scale_color_manual(values = SEIZURE_TYPE_COLORS)
 
 ggsave(filename = "output/figs/sz_props.png", plot = p_sz_props, width = 10, height = 7, dpi = 600)
-
