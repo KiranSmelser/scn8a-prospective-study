@@ -43,7 +43,7 @@ med_dosages_raw <- readr::read_csv("data/med_dosages.csv", show_col_types = FALS
 # Derive distinct medication intervals
 dosage_intervals <- med_dosages_raw %>%
   dplyr::left_join(medications, by = "medication_id") %>%
-  dplyr::filter(is.na(.data$med_patient_id) | .data$med_patient_id == .data$patient_id) %>%
+  dplyr::filter(!is.na(.data$med_patient_id), .data$med_patient_id == .data$patient_id) %>%
   dplyr::mutate(patient_id = dplyr::coalesce(.data$patient_id, .data$med_patient_id)) %>%
   dplyr::filter(!is.na(.data$patient_id)) %>%
   dplyr::select(.data$patient_id, .data$medication_id, .data$start_date, .data$end_date) %>%
