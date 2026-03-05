@@ -6,7 +6,15 @@ suppressPackageStartupMessages({
 })
 
 dir.create("output/figs", recursive = TRUE, showWarnings = FALSE)
+dir.create("output/figs/timelines", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/tabs", recursive = TRUE, showWarnings = FALSE)
+existing_timeline_pdfs <- list.files("output/figs/timelines", pattern = "\\.pdf$", full.names = TRUE)
+if (length(existing_timeline_pdfs) > 0) {
+  invisible(file.remove(existing_timeline_pdfs))
+}
+if (file.exists("output/figs/helpilepsy_timelines.pdf")) {
+  invisible(file.remove("output/figs/helpilepsy_timelines.pdf"))
+}
 current_date <- Sys.Date()
 
 # Milestone labels (from Citizen timelines)
@@ -43,6 +51,47 @@ parse_event_date <- function(x) {
   parsed <- suppressWarnings(ymd_hms(x, tz = "UTC"))
   parsed <- if_else(is.na(parsed), suppressWarnings(ymd(x)), parsed)
   as.Date(parsed)
+}
+
+normalize_boolean_flag <- function(x, default = FALSE) {
+  if (is.logical(x)) {
+    return(replace_na(x, default))
+  }
+
+  normalized <- str_to_lower(str_trim(as.character(x)))
+  parsed <- case_when(
+    normalized %in% c("true", "t", "1", "yes", "y") ~ TRUE,
+    normalized %in% c("false", "f", "0", "no", "n") ~ FALSE,
+    TRUE ~ NA
+  )
+  replace_na(parsed, default)
+}
+
+normalize_deleted_flag <- function(x) {
+  normalize_boolean_flag(x, default = FALSE)
+}
+
+normalize_rescue_med_flag <- function(x) {
+  normalize_boolean_flag(x, default = FALSE)
+}
+
+normalize_seizure_label <- function(seizure_type) {
+  seizure_type_normalized <- seizure_type %>%
+    replace_na("") %>%
+    str_replace_all("[-_]+", " ") %>%
+    str_squish() %>%
+    str_to_lower()
+
+  is_gtc <- str_detect(
+    seizure_type_normalized,
+    "\\b(gtc|generalized\\s+tonic\\s*clonic(?:\\s+seizures?)?|generalised\\s+tonic\\s*clonic(?:\\s+seizures?)?)\\b"
+  )
+
+  case_when(
+    seizure_type_normalized == "" ~ "Unspecified",
+    is_gtc ~ "GTC",
+    TRUE ~ str_to_title(seizure_type_normalized)
+  )
 }
 
 # Merge overlapping medication intervals
@@ -104,11 +153,41 @@ patients <- readr::read_csv("data/patients.csv", show_col_types = FALSE) %>%
   select(patient_id, first_name, last_name)
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE)
-medications <- readr::read_csv("data/medications.csv", show_col_types = FALSE)
+medications <- readr::read_csv("data/medications.csv", show_col_types = FALSE) %>%
+  mutate(name = str_squish(name))
+if (!"is_deleted" %in% names(medications)) {
+  medications$is_deleted <- FALSE
+}
+if (!"is_rescue_med" %in% names(medications)) {
+  medications$is_rescue_med <- FALSE
+}
+medications$is_deleted <- normalize_deleted_flag(medications$is_deleted)
+medications$is_rescue_med <- normalize_rescue_med_flag(medications$is_rescue_med)
+medications_for_analysis <- medications %>%
+  filter(!is_deleted, !is_rescue_med)
 med_dosages <- readr::read_csv("data/med_dosages.csv", show_col_types = FALSE)
 med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE)
 surveys <- readr::read_csv("data/prospective_surveys.csv", show_col_types = FALSE)
 milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv", show_col_types = FALSE)
+app_activity_dates <- jsonlite::fromJSON("data/patient_summary_metrics.json") %>%
+  as_tibble() %>%
+  transmute(
+    patient_id,
+    app_activity_date = parse_event_date(first_app_activity_createdAt)
+  )
+
+prospective_survey_completion <- surveys %>%
+  mutate(
+    survey_complete_flag = suppressWarnings(as.numeric(prospective_study_complete)) == 2,
+    survey_date = parse_event_date(prospective_study_timestamp_utc),
+    survey_date = if_else(
+      is.na(survey_date),
+      as.Date(suppressWarnings(mdy_hm(prospective_study_timestamp, tz = "UTC"))),
+      survey_date
+    )
+  ) %>%
+  filter(!is.na(patient_id), survey_complete_flag, !is.na(survey_date)) %>%
+  distinct(patient_id)
 
 # Seizure events
 
@@ -119,7 +198,7 @@ seizure_events <- events %>%
     seizure_type = if_else(is.na(seizure_type) | seizure_type == "", "Unspecified", seizure_type),
     seizure_type = str_replace_all(seizure_type, "_", " "),
     seizure_type = str_squish(seizure_type),
-    seizure_label = str_to_title(seizure_type)
+    seizure_label = normalize_seizure_label(seizure_type)
   ) %>%
   filter(!is.na(event_date)) %>%
   select(patient_id, seizure_type, seizure_label, event_date)
@@ -134,7 +213,23 @@ med_intervals_raw <- bind_rows(
 ) %>%
   mutate(end_date = if_else(!is.na(end_date) & end_date < start_date, as.Date(NA), end_date)) %>%
   filter(!is.na(start_date)) %>%
+  semi_join(
+    medications_for_analysis %>% select(patient_id, medication_id),
+    by = c("patient_id", "medication_id")
+  ) %>%
   distinct()
+
+medication_lookup <- medications_for_analysis %>%
+  transmute(
+    patient_id,
+    medication_id,
+    name
+  )
+
+medication_refs_missing_metadata <- med_intervals_raw %>%
+  anti_join(medication_lookup %>% select(patient_id, medication_id), by = c("patient_id", "medication_id")) %>%
+  distinct(patient_id, medication_id) %>%
+  arrange(patient_id, medication_id)
 
 med_schedule_summary_raw <- med_intervals_raw %>%
   group_by(patient_id) %>%
@@ -146,9 +241,9 @@ med_schedule_summary_raw <- med_intervals_raw %>%
   )
 
 med_intervals <- med_intervals_raw %>%
-  left_join(medications %>% select(patient_id, medication_id, name), by = c("patient_id", "medication_id")) %>%
+  left_join(medication_lookup, by = c("patient_id", "medication_id")) %>%
   mutate(
-    med_name = if_else(is.na(name) | name == "", medication_id, name),
+    med_name = if_else(is.na(name) | name == "", "Unknown medication", name),
     med_name = str_squish(med_name)
   ) %>%
   select(patient_id, med_name, start_date, end_date) %>%
@@ -175,6 +270,9 @@ milestone_status_history <- milestones_raw %>%
   ) %>%
   filter(!is.na(patient_id), !is.na(event_date))
 
+development_module_answered <- milestone_status_history %>%
+  distinct(patient_id)
+
 milestone_intervals <- tibble(
   patient_id = character(),
   milestone_label = character(),
@@ -187,7 +285,7 @@ if (nrow(milestone_status_history) > 0) {
     arrange(patient_id, milestone_label, event_date) %>%
     group_by(patient_id, milestone_label) %>%
     mutate(
-      status_flag = (status_numeric == 1),
+      status_flag = status_numeric %in% c(2, 3, 5),
       change_flag = status_flag != lag(status_flag),
       run_id = cumsum(if_else(is.na(change_flag) | change_flag, 1L, 0L))
     ) %>%
@@ -227,7 +325,40 @@ patients_with_data <- union(
   union(unique(seizure_events$patient_id), unique(med_intervals$patient_id)),
   unique(milestone_intervals$patient_id)
 )
+patients_with_data <- union(patients_with_data, unique(prospective_survey_completion$patient_id))
 patients_with_data <- patients_with_data[!is.na(patients_with_data)]
+patients_with_data <- intersect(patients_with_data, whatsapp_names$patient_id)
+
+milestone_row_counts <- milestone_intervals %>%
+  group_by(patient_id) %>%
+  summarise(n_milestone_rows = n_distinct(milestone_label), .groups = "drop")
+seizure_row_counts <- seizure_events %>%
+  group_by(patient_id) %>%
+  summarise(n_seizure_rows = n_distinct(seizure_label), .groups = "drop")
+med_row_counts <- med_intervals %>%
+  group_by(patient_id) %>%
+  summarise(n_med_rows = n_distinct(med_name), .groups = "drop")
+
+patient_row_slots <- tibble(patient_id = patients_with_data) %>%
+  left_join(milestone_row_counts, by = "patient_id") %>%
+  left_join(seizure_row_counts, by = "patient_id") %>%
+  left_join(med_row_counts, by = "patient_id") %>%
+  mutate(
+    n_milestone_rows = replace_na(n_milestone_rows, 0L),
+    n_seizure_rows = replace_na(n_seizure_rows, 0L),
+    n_med_rows = replace_na(n_med_rows, 0L),
+    n_no_skills_rows = if_else(
+      patient_id %in% prospective_survey_completion$patient_id & n_milestone_rows == 0L,
+      1L,
+      0L
+    ),
+    n_total_y_rows = n_milestone_rows + n_no_skills_rows + n_seizure_rows + n_med_rows
+  )
+
+max_y_rows <- max(patient_row_slots$n_total_y_rows, na.rm = TRUE)
+if (!is.finite(max_y_rows) || max_y_rows < 1) {
+  max_y_rows <- 1L
+}
 
 # Outputs for quality checking
 
@@ -247,6 +378,21 @@ patient_names <- patient_names %>%
     display_name = if_else(is.na(display_name) | display_name == "", patient_id, display_name)
   ) %>%
   select(patient_id, display_name)
+
+patient_timeline_filenames <- patient_names %>%
+  mutate(
+    timeline_file_base = str_to_lower(str_replace_all(coalesce(display_name, ""), "[^A-Za-z0-9]+", "_")),
+    timeline_file_base = str_replace_all(timeline_file_base, "^_+|_+$", ""),
+    timeline_file_base = if_else(timeline_file_base == "", patient_id, timeline_file_base)
+  ) %>%
+  arrange(patient_id) %>%
+  group_by(timeline_file_base) %>%
+  mutate(
+    timeline_file_base = if_else(n() > 1, paste0(timeline_file_base, "_", row_number()), timeline_file_base)
+  ) %>%
+  ungroup() %>%
+  mutate(timeline_filename = paste0(timeline_file_base, "_timeline.pdf")) %>%
+  select(patient_id, timeline_filename)
 
 seizure_summary <- seizure_events %>%
   group_by(patient_id) %>%
@@ -279,22 +425,28 @@ milestone_summary <- milestone_intervals %>%
     .groups = "drop"
   )
 
-medications_missing_schedule <- medications %>%
+medications_missing_schedule <- medications_for_analysis %>%
   anti_join(med_intervals_raw %>% distinct(patient_id, medication_id), by = c("patient_id", "medication_id")) %>%
-  select(patient_id, medication_id, name, reason, treatment_type, intake_type, createdAt, updatedAt) %>%
+  select(patient_id, medication_id, name, reason, treatment_type, intake_type, is_deleted, createdAt, updatedAt) %>%
   arrange(patient_id, name)
 
 medications_missing_schedule_summary <- medications_missing_schedule %>%
   group_by(patient_id) %>%
   summarise(n_med_records_missing_schedule = n_distinct(medication_id), .groups = "drop")
 
+medication_refs_missing_metadata_summary <- medication_refs_missing_metadata %>%
+  group_by(patient_id) %>%
+  summarise(n_med_refs_missing_metadata = n_distinct(medication_id), .groups = "drop")
+
 timeline_qc <- patient_order %>%
   left_join(patient_names, by = "patient_id") %>%
+  left_join(app_activity_dates, by = "patient_id") %>%
   left_join(seizure_summary, by = "patient_id") %>%
   left_join(med_summary, by = "patient_id") %>%
   left_join(med_schedule_summary_raw, by = "patient_id") %>%
   left_join(milestone_summary, by = "patient_id") %>%
   left_join(medications_missing_schedule_summary, by = "patient_id") %>%
+  left_join(medication_refs_missing_metadata_summary, by = "patient_id") %>%
   mutate(
     n_seizure_events = replace_na(n_seizure_events, 0L),
     n_seizure_types = replace_na(n_seizure_types, 0L),
@@ -302,14 +454,16 @@ timeline_qc <- patient_order %>%
     n_medications = replace_na(n_medications, 0L),
     n_medications_ongoing = replace_na(n_medications_ongoing, 0L),
     n_milestones_achieved = replace_na(n_milestones_achieved, 0L),
-    n_med_records_missing_schedule = replace_na(n_med_records_missing_schedule, 0L)
+    n_med_records_missing_schedule = replace_na(n_med_records_missing_schedule, 0L),
+    n_med_refs_missing_metadata = replace_na(n_med_refs_missing_metadata, 0L)
   ) %>%
   rowwise() %>%
   mutate(
     timeline_start_date = {
       dates <- c(seizure_first_date, med_start_min, med_schedule_start_min, milestone_first_date)
       dates <- dates[!is.na(dates)]
-      if (length(dates) == 0) as.Date(NA) else min(dates)
+      start_date <- if (length(dates) == 0) as.Date(NA) else min(dates)
+      if (!is.na(app_activity_date)) max(start_date, app_activity_date) else start_date
     },
     timeline_end_date = {
       dates <- c(seizure_last_date, med_end_max, med_start_max, med_schedule_start_max, med_schedule_end_max, milestone_last_date)
@@ -324,6 +478,7 @@ timeline_qc <- patient_order %>%
 
 readr::write_csv(timeline_qc, "output/tabs/helpilepsy_timeline_qc.csv")
 readr::write_csv(medications_missing_schedule, "output/tabs/helpilepsy_medications_missing_schedule.csv")
+readr::write_csv(medication_refs_missing_metadata, "output/tabs/helpilepsy_medication_refs_missing_metadata.csv")
 
 # Plotting
 
@@ -339,8 +494,22 @@ plot_patient_timeline <- function(pt_id) {
   pt_med_schedule <- med_schedule_summary_raw %>% filter(patient_id == pt_id) %>% slice_head(n = 1)
   pt_seizures <- seizure_events %>% filter(patient_id == pt_id)
   pt_milestones <- milestone_intervals %>% filter(patient_id == pt_id)
+  pt_completed_prospective <- prospective_survey_completion %>% filter(patient_id == pt_id) %>%
+    pull(patient_id) %>% length() > 0
+  pt_entered_development_module <- development_module_answered %>% filter(patient_id == pt_id) %>%
+    pull(patient_id) %>% length() > 0
+  show_no_skills_label <- pt_completed_prospective && pt_entered_development_module && nrow(pt_milestones) == 0
+  show_no_entered_skills_label <- pt_completed_prospective && !pt_entered_development_module && nrow(pt_milestones) == 0
+  pt_app_activity_date <- app_activity_dates %>% filter(patient_id == pt_id) %>%
+    pull(app_activity_date) %>% first()
 
-  if (nrow(pt_meds) == 0 && nrow(pt_seizures) == 0 && nrow(pt_milestones) == 0) {
+  if (
+    nrow(pt_meds) == 0 &&
+      nrow(pt_seizures) == 0 &&
+      nrow(pt_milestones) == 0 &&
+      !show_no_skills_label &&
+      !show_no_entered_skills_label
+  ) {
     return(NULL)
   }
 
@@ -361,12 +530,15 @@ plot_patient_timeline <- function(pt_id) {
     c(pt_meds$start_date, pt_med_schedule_start_min, pt_seizures$event_date, pt_milestones$start_date),
     na.rm = TRUE
   )
+  if (!is.na(pt_app_activity_date)) {
+    earliest_date <- max(earliest_date, pt_app_activity_date, na.rm = TRUE)
+  }
 
   if (!is.finite(latest_date)) {
     latest_date <- current_date
   }
   if (!is.finite(earliest_date)) {
-    earliest_date <- latest_date - 30
+    earliest_date <- if (!is.na(pt_app_activity_date)) pt_app_activity_date else latest_date - 30
   }
 
   plot_end_date <- min(latest_date, current_date)
@@ -383,10 +555,23 @@ plot_patient_timeline <- function(pt_id) {
         end_date > plot_end_date ~ plot_end_date,
         TRUE ~ end_date
       )
-    )
+    ) %>%
+    mutate(
+      start_plot_date = pmax(start_date, earliest_date),
+      end_plot_date = if_else(end_plot_date == start_plot_date,
+                              pmin(end_plot_date + 1, plot_end_date),
+                              end_plot_date),
+      start_plot_date = if_else(end_plot_date == start_plot_date,
+                                pmax(start_plot_date - 1, earliest_date),
+                                start_plot_date)
+    ) %>%
+    filter(start_plot_date <= plot_end_date, end_plot_date >= earliest_date)
 
   pt_seizures <- pt_seizures %>%
-    mutate(seizure_label = if_else(is.na(seizure_label) | seizure_label == "", "Unspecified", seizure_label))
+    mutate(
+      seizure_label = if_else(is.na(seizure_label) | seizure_label == "", "Unspecified", seizure_label)
+    ) %>%
+    filter(event_date >= earliest_date, event_date <= plot_end_date)
 
   y_levels <- character(0)
   if (nrow(pt_milestones) > 0) {
@@ -395,6 +580,10 @@ plot_patient_timeline <- function(pt_id) {
       pull(milestone_label) %>%
       unique()
     y_levels <- c(y_levels, milestone_levels)
+  } else if (show_no_skills_label) {
+    y_levels <- c(y_levels, "No skills")
+  } else if (show_no_entered_skills_label) {
+    y_levels <- c(y_levels, "No entered skills")
   }
   if (nrow(pt_seizures) > 0) {
     seizure_levels <- pt_seizures %>% count(seizure_label, sort = TRUE) %>% pull(seizure_label)
@@ -411,7 +600,7 @@ plot_patient_timeline <- function(pt_id) {
     p <- p +
       geom_segment(
         data = pt_meds,
-        aes(x = start_date, xend = end_plot_date, y = med_label, yend = med_label, color = med_status),
+        aes(x = start_plot_date, xend = end_plot_date, y = med_label, yend = med_label, color = med_status),
         linewidth = 2
       )
   }
@@ -442,6 +631,8 @@ plot_patient_timeline <- function(pt_id) {
     scale_color_manual(values = c("Ongoing" = "#709AE1", "Ended" = "#8A9197"), drop = FALSE) +
     scale_x_date(
       date_labels = "%b %Y",
+      date_breaks = "1 month",
+      minor_breaks = NULL,
       limits = c(earliest_date, plot_end_date),
       expand = expansion(mult = c(0.01, 0.01))
     ) +
@@ -454,15 +645,40 @@ plot_patient_timeline <- function(pt_id) {
     theme_linedraw() +
     theme(
       plot.title = element_text(hjust = 0, face = "bold"),
-      axis.text.x = element_text(angle = 45, hjust = 1)
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+      panel.grid.minor.x = element_blank()
     )
 }
 
-pdf("output/figs/helpilepsy_timelines.pdf", width = 16, height = 10)
 for (pt in patients_with_data) {
   plt <- plot_patient_timeline(pt)
   if (!is.null(plt)) {
-    suppressWarnings(print(plt))
+    pt_row_count <- patient_row_slots %>%
+      filter(patient_id == pt) %>%
+      pull(n_total_y_rows) %>%
+      first()
+    if (is.na(pt_row_count) || pt_row_count < 1) {
+      pt_row_count <- 1
+    }
+    min_plot_height_frac <- 0.2
+    plot_height_frac <- max(pt_row_count / max_y_rows, min_plot_height_frac)
+
+    pt_filename <- patient_timeline_filenames %>%
+      filter(patient_id == pt) %>%
+      pull(timeline_filename) %>%
+      first()
+    if (is.na(pt_filename) || pt_filename == "") {
+      pt_filename <- paste0(pt, "_timeline.pdf")
+    }
+    pt_output_pdf <- file.path("output/figs/timelines", pt_filename)
+    grDevices::pdf(pt_output_pdf, width = 16, height = 10)
+    suppressWarnings(
+      print(
+        plt,
+        newpage = TRUE,
+        vp = grid::viewport(x = 0.5, y = 0.5, width = 1, height = plot_height_frac)
+      )
+    )
+    grDevices::dev.off()
   }
 }
-dev.off()

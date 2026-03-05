@@ -21,13 +21,37 @@ collapse_medication_names <- function(values) {
   }
 }
 
+normalize_deleted_flag <- function(x) {
+  if (is.logical(x)) {
+    return(tidyr::replace_na(x, FALSE))
+  }
+
+  normalized <- stringr::str_to_lower(stringr::str_trim(as.character(x)))
+  parsed <- dplyr::case_when(
+    normalized %in% c("true", "t", "1", "yes", "y") ~ TRUE,
+    normalized %in% c("false", "f", "0", "no", "n") ~ FALSE,
+    TRUE ~ NA
+  )
+  tidyr::replace_na(parsed, FALSE)
+}
+
 # Load medication data (restrict to epilepsy treatments)
-medications <- readr::read_csv("data/medications.csv", show_col_types = FALSE) %>%
+medications <- readr::read_csv("data/medications.csv", show_col_types = FALSE)
+if (!"is_deleted" %in% names(medications)) {
+  medications$is_deleted <- FALSE
+}
+medications$is_deleted <- normalize_deleted_flag(medications$is_deleted)
+
+medications <- medications %>%
   dplyr::mutate(
     reason_clean = tolower(trimws(.data$reason))
   ) %>%
-  dplyr::filter(!is.na(.data$reason_clean), .data$reason_clean == "epilepsy") %>%
-  dplyr::select(medication_id, med_patient_id = .data$patient_id, medication_name = .data$name)
+  dplyr::filter(!is.na(.data$reason_clean), .data$reason_clean == "epilepsy", !.data$is_deleted) %>%
+  dplyr::select(
+    medication_id,
+    med_patient_id = .data$patient_id,
+    medication_name = .data$name
+  )
 
 # Load dosage data
 med_dosages_raw <- readr::read_csv("data/med_dosages.csv", show_col_types = FALSE) %>%
@@ -174,7 +198,7 @@ if (nrow(analysis_months) == 0) {
     dplyr::mutate(
       medication_display_name = dplyr::case_when(
         !is.na(.data$medication_name) & nzchar(trimws(.data$medication_name)) ~ trimws(.data$medication_name),
-        TRUE ~ paste0("Unknown medication (", .data$medication_id, ")")
+        TRUE ~ "Unknown medication"
       )
     )
 

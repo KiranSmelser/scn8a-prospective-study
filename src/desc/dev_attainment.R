@@ -11,7 +11,7 @@ milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv",
     milestone = as.character(.data$milestone),
     survey_instance_id = as.character(.data$survey_instance_id),
     status_numeric = suppressWarnings(as.numeric(.data$status)),
-    achieved = .data$status_numeric == 1
+    achieved = .data$status_numeric %in% c(2, 3, 5)
   )
 
 milestone_labels <- c(
