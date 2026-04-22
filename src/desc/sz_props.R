@@ -1,10 +1,14 @@
-# Seizure type proportions over time (area plot)
+# Seizure type proportions over time
 
 suppressPackageStartupMessages({
   library(tidyverse)
-  library(lubridate)
   library(scales)
 })
+
+source("src/desc/seizure_type_standardization.R")
+
+OUTPUT_FIG_DIR <- "output/figs/seizure_patterns"
+dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
 
 SEIZURE_TYPE_COLORS <- c(
   `Tonic-clonic` = "#5698a3",  
@@ -16,35 +20,9 @@ SEIZURE_TYPE_COLORS <- c(
   `Other`        = "#B0B0B0"  
 )
 
-# Map raw seizure_type strings
-map_seizure_type <- function(x) {
-  s <- tolower(trimws(x))
-  s <- gsub("_", " ", s)
-  s <- gsub("[^a-z ]", " ", s)
-  s <- stringr::str_squish(s)
-
-  dplyr::case_when(
-    stringr::str_detect(s, "spasm") ~ "Spasms",
-    stringr::str_detect(s, "absence") ~ "Absence",
-    stringr::str_detect(s, "myoc") ~ "Myoclonic",
-    stringr::str_detect(s, "tonic ?clonic|tonicclonic|grand mal|grote aanval|gtcs") ~ "Tonic-clonic",
-    stringr::str_detect(s, "\\bfocal\\b|impaired awareness|aware|hyperkinetic|gelastic|dacrystic") ~ "Focal",
-    stringr::str_detect(s, "\\btonic\\b") ~ "Tonic",
-    stringr::str_detect(s, "clonic") ~ "Tonic",
-    TRUE ~ "Other"
-  )
-}
-
 # Read events
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
-  dplyr::filter(tolower(.data$type) == "seizure") %>%
-  dplyr::mutate(
-    date_time = lubridate::ymd_hms(.data$date, quiet = TRUE, tz = "UTC"),
-    month = as.Date(lubridate::floor_date(.data$date_time, "month")),
-    seizure_type_clean = dplyr::if_else(is.na(.data$seizure_type) | .data$seizure_type == "",
-                                        "Other", .data$seizure_type),
-    seizure_group = map_seizure_type(.data$seizure_type_clean)
-  ) %>%
+  standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::filter(!is.na(.data$month), !is.na(.data$patient_id))
 
 # Count each patient once per seizure group per month
@@ -66,7 +44,7 @@ patients_total <- monthly_counts %>%
 # Compute proportion of each seizure type per month
 props_df <- left_join(monthly_counts, patients_total, by = "month") %>%
   mutate(prop = n / total) %>%
-  filter(month >= "2025-01-01" & month <= "2025-10-01")
+  filter(month >= "2025-01-01" & month <= "2026-03-01")
 
 # Plot
 p_sz_props <- ggplot(props_df, aes(x = month, y = prop, fill = seizure_group)) +
@@ -81,4 +59,10 @@ p_sz_props <- ggplot(props_df, aes(x = month, y = prop, fill = seizure_group)) +
   scale_fill_manual(values = SEIZURE_TYPE_COLORS) +
   scale_color_manual(values = SEIZURE_TYPE_COLORS)
 
-ggsave(filename = "output/figs/sz_props.png", plot = p_sz_props, width = 10, height = 7, dpi = 600)
+ggsave(
+  filename = file.path(OUTPUT_FIG_DIR, "sz_props.png"),
+  plot = p_sz_props,
+  width = 10,
+  height = 7,
+  dpi = 600
+)

@@ -98,8 +98,9 @@ if (nrow(usage_months) == 0) {
     dplyr::arrange(dplyr::desc(.data$avg_seizures_per_month))
 }
 
-if (!dir.exists("output/tabs")) {
-  dir.create("output/tabs", recursive = TRUE, showWarnings = FALSE)
+OUTPUT_TAB_DIR <- "output/tabs/seizure_patterns"
+if (!dir.exists(OUTPUT_TAB_DIR)) {
+  dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
 }
 
-write.csv(sz_avgs, "output/tabs/sz_avgs.csv", row.names = FALSE)
+write.csv(sz_avgs, file.path(OUTPUT_TAB_DIR, "sz_avgs.csv"), row.names = FALSE)

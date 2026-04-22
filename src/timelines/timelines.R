@@ -5,6 +5,9 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
+source("src/desc/medication_standardization.R")
+source("src/desc/seizure_type_standardization.R")
+
 dir.create("output/figs", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/figs/timelines", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/tabs", recursive = TRUE, showWarnings = FALSE)
@@ -53,44 +56,16 @@ parse_event_date <- function(x) {
   as.Date(parsed)
 }
 
-normalize_boolean_flag <- function(x, default = FALSE) {
-  if (is.logical(x)) {
-    return(replace_na(x, default))
-  }
-
-  normalized <- str_to_lower(str_trim(as.character(x)))
-  parsed <- case_when(
-    normalized %in% c("true", "t", "1", "yes", "y") ~ TRUE,
-    normalized %in% c("false", "f", "0", "no", "n") ~ FALSE,
-    TRUE ~ NA
-  )
-  replace_na(parsed, default)
+parse_bool <- function(x) {
+  str_to_lower(str_trim(as.character(x))) %in% c("true", "1", "yes", "y")
 }
 
-normalize_deleted_flag <- function(x) {
-  normalize_boolean_flag(x, default = FALSE)
-}
-
-normalize_rescue_med_flag <- function(x) {
-  normalize_boolean_flag(x, default = FALSE)
-}
-
-normalize_seizure_label <- function(seizure_type) {
-  seizure_type_normalized <- seizure_type %>%
-    replace_na("") %>%
-    str_replace_all("[-_]+", " ") %>%
-    str_squish() %>%
-    str_to_lower()
-
-  is_gtc <- str_detect(
-    seizure_type_normalized,
-    "\\b(gtc|generalized\\s+tonic\\s*clonic(?:\\s+seizures?)?|generalised\\s+tonic\\s*clonic(?:\\s+seizures?)?)\\b"
-  )
-
+parse_yes_no <- function(x) {
+  normalized <- str_to_lower(str_squish(as.character(x)))
   case_when(
-    seizure_type_normalized == "" ~ "Unspecified",
-    is_gtc ~ "GTC",
-    TRUE ~ str_to_title(seizure_type_normalized)
+    normalized %in% c("yes", "y", "true", "1") ~ "yes",
+    normalized %in% c("no", "n", "false", "0") ~ "no",
+    TRUE ~ NA_character_
   )
 }
 
@@ -153,18 +128,22 @@ patients <- readr::read_csv("data/patients.csv", show_col_types = FALSE) %>%
   select(patient_id, first_name, last_name)
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE)
-medications <- readr::read_csv("data/medications.csv", show_col_types = FALSE) %>%
-  mutate(name = str_squish(name))
-if (!"is_deleted" %in% names(medications)) {
-  medications$is_deleted <- FALSE
+medications_raw <- readr::read_csv("data/medications.csv", show_col_types = FALSE)
+medications_for_analysis <- standardize_non_rescue_epilepsy_medications(
+  medications_raw,
+  include_non_drug = FALSE
+) %>%
+  mutate(name = name_standardized)
+forms <- if (file.exists("data/forms.csv")) {
+  readr::read_csv("data/forms.csv", show_col_types = FALSE)
+} else {
+  tibble()
 }
-if (!"is_rescue_med" %in% names(medications)) {
-  medications$is_rescue_med <- FALSE
+form_answers <- if (file.exists("data/form_answers.csv")) {
+  readr::read_csv("data/form_answers.csv", show_col_types = FALSE)
+} else {
+  tibble()
 }
-medications$is_deleted <- normalize_deleted_flag(medications$is_deleted)
-medications$is_rescue_med <- normalize_rescue_med_flag(medications$is_rescue_med)
-medications_for_analysis <- medications %>%
-  filter(!is_deleted, !is_rescue_med)
 med_dosages <- readr::read_csv("data/med_dosages.csv", show_col_types = FALSE)
 med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE)
 surveys <- readr::read_csv("data/prospective_surveys.csv", show_col_types = FALSE)
@@ -189,19 +168,139 @@ prospective_survey_completion <- surveys %>%
   filter(!is.na(patient_id), survey_complete_flag, !is.na(survey_date)) %>%
   distinct(patient_id)
 
+# Daily app usage
+
+app_usage_parts <- list()
+
+if ("date" %in% names(events)) {
+  app_usage_parts <- append(
+    app_usage_parts,
+    list(
+      events %>%
+        transmute(patient_id, usage_date = parse_event_date(date)) %>%
+        filter(!is.na(patient_id), !is.na(usage_date), usage_date <= current_date)
+    )
+  )
+}
+
+if (nrow(forms) > 0 && "date" %in% names(forms)) {
+  app_usage_parts <- append(
+    app_usage_parts,
+    list(
+      forms %>%
+        transmute(patient_id, usage_date = parse_event_date(date)) %>%
+        filter(!is.na(patient_id), !is.na(usage_date), usage_date <= current_date)
+    )
+  )
+}
+
+if (nrow(med_intakes) > 0 && all(c("taken", "taken_date") %in% names(med_intakes))) {
+  app_usage_parts <- append(
+    app_usage_parts,
+    list(
+      med_intakes %>%
+        transmute(
+          patient_id,
+          taken_flag = parse_bool(taken),
+          usage_date = parse_event_date(taken_date)
+        ) %>%
+        filter(taken_flag, !is.na(patient_id), !is.na(usage_date), usage_date <= current_date) %>%
+        select(patient_id, usage_date)
+    )
+  )
+}
+
+app_usage_daily <- if (length(app_usage_parts) == 0) {
+  tibble(patient_id = character(), usage_date = as.Date(character()), app_actions = integer())
+} else {
+  bind_rows(app_usage_parts) %>%
+    distinct(patient_id, usage_date) %>%
+    mutate(app_actions = 1L)
+}
+
+# Weekly survey completion status
+
+scn8a_diary_q1_code <- "q1_1_did_you_give_your_child_all_medications_every_day_this_week"
+scn8a_diary_q2_code <- "q2_2_does_the_daily_seizure_record_in_the_app_this_week_accurately_reflect_your_child_s_seizure_count_including_if_there_were_none"
+
+scn8a_diary_forms <- if (
+  nrow(forms) > 0 &&
+    all(c("form_id", "patient_id", "form_name", "date") %in% names(forms))
+) {
+  forms %>%
+    mutate(
+      form_name_clean = str_to_lower(str_squish(form_name)),
+      diary_date = parse_event_date(date)
+    ) %>%
+    filter(
+      !is.na(form_id),
+      !is.na(patient_id),
+      form_name_clean == "scn8a diary completion",
+      !is.na(diary_date),
+      diary_date <= current_date
+    ) %>%
+    select(form_id, patient_id, diary_date)
+} else {
+  tibble(
+    form_id = character(),
+    patient_id = character(),
+    diary_date = as.Date(character())
+  )
+}
+
+diary_answers_wide <- if (
+  nrow(scn8a_diary_forms) > 0 &&
+    nrow(form_answers) > 0 &&
+    all(c("form_id", "question_code", "answer") %in% names(form_answers))
+) {
+  form_answers %>%
+    semi_join(scn8a_diary_forms %>% select(form_id), by = "form_id") %>%
+    filter(question_code %in% c(scn8a_diary_q1_code, scn8a_diary_q2_code)) %>%
+    mutate(answer_yes_no = parse_yes_no(answer)) %>%
+    arrange(form_id, question_code) %>%
+    group_by(form_id, question_code) %>%
+    summarise(answer_yes_no = first(answer_yes_no[!is.na(answer_yes_no)]), .groups = "drop") %>%
+    pivot_wider(
+      id_cols = form_id,
+      names_from = question_code,
+      values_from = answer_yes_no
+    )
+} else {
+  tibble(
+    form_id = character(),
+    !!scn8a_diary_q1_code := character(),
+    !!scn8a_diary_q2_code := character()
+  )
+}
+
+scn8a_diary_events <- scn8a_diary_forms %>%
+  left_join(diary_answers_wide, by = "form_id") %>%
+  mutate(
+    diary_status = case_when(
+      .data[[scn8a_diary_q1_code]] == "yes" & .data[[scn8a_diary_q2_code]] == "yes" ~ "All yes",
+      .data[[scn8a_diary_q1_code]] == "no" | .data[[scn8a_diary_q2_code]] == "no" ~ "Any no",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(diary_status))
+
 # Seizure events
 
 seizure_events <- events %>%
-  filter(tolower(type) == "seizure") %>%
+  standardize_seizure_events(filter_to_seizure = TRUE) %>%
   mutate(
-    event_date = parse_event_date(date),
-    seizure_type = if_else(is.na(seizure_type) | seizure_type == "", "Unspecified", seizure_type),
-    seizure_type = str_replace_all(seizure_type, "_", " "),
-    seizure_type = str_squish(seizure_type),
-    seizure_label = normalize_seizure_label(seizure_type)
+    event_date = coalesce(event_date, parse_event_date(date)),
+    seizure_label = if_else(
+      is.na(seizure_type_standardized) | seizure_type_standardized == "",
+      "Unspecified",
+      seizure_type_standardized
+    )
   ) %>%
   filter(!is.na(event_date)) %>%
-  select(patient_id, seizure_type, seizure_label, event_date)
+  select(
+    patient_id, event_date, seizure_label, seizure_group,
+    seizure_type_raw, seizure_type_standardized, seizure_type_primary
+  )
 
 # Medication intervals
 
@@ -310,22 +409,37 @@ if (nrow(milestone_status_history) > 0) {
     )
 }
 
-# Patient names
+# Patient names + variants
 
-whatsapp_names <- readr::read_csv("data/whatsapp_status.csv", col_names = c(
-  "patient_id", "wh_first_name", "wh_last_name", "status", "source", "run_timestamp"
-), show_col_types = FALSE) %>%
+whatsapp_patient_metadata <- readr::read_csv("data/whatsapp_status.csv", show_col_types = FALSE) %>%
   mutate(
-    whatsapp_name = str_squish(str_trim(paste(wh_first_name, wh_last_name)))
+    patient_id = as.character(patient_id),
+    whatsapp_name = str_squish(str_trim(paste(first_name, last_name))),
+    whatsapp_name = na_if(whatsapp_name, ""),
+    variant_p = str_squish(as.character(variant_p)),
+    variant_p = na_if(variant_p, ""),
+    run_timestamp = as.character(run_timestamp)
   ) %>%
+  filter(!is.na(patient_id), patient_id != "") %>%
+  arrange(patient_id, desc(!is.na(variant_p)), desc(run_timestamp)) %>%
+  group_by(patient_id) %>%
+  summarise(
+    whatsapp_name = first(whatsapp_name[!is.na(whatsapp_name)]),
+    variant_p = first(variant_p),
+    .groups = "drop"
+  )
+
+whatsapp_names <- whatsapp_patient_metadata %>%
   select(patient_id, whatsapp_name) %>%
-  filter(whatsapp_name != "")
+  filter(!is.na(whatsapp_name), whatsapp_name != "")
 
 patients_with_data <- union(
   union(unique(seizure_events$patient_id), unique(med_intervals$patient_id)),
   unique(milestone_intervals$patient_id)
 )
 patients_with_data <- union(patients_with_data, unique(prospective_survey_completion$patient_id))
+patients_with_data <- union(patients_with_data, unique(app_usage_daily$patient_id))
+patients_with_data <- union(patients_with_data, unique(scn8a_diary_events$patient_id))
 patients_with_data <- patients_with_data[!is.na(patients_with_data)]
 patients_with_data <- intersect(patients_with_data, whatsapp_names$patient_id)
 
@@ -338,21 +452,26 @@ seizure_row_counts <- seizure_events %>%
 med_row_counts <- med_intervals %>%
   group_by(patient_id) %>%
   summarise(n_med_rows = n_distinct(med_name), .groups = "drop")
-
+diary_row_counts <- scn8a_diary_events %>%
+  group_by(patient_id) %>%
+  summarise(n_diary_rows = 1L, .groups = "drop")
 patient_row_slots <- tibble(patient_id = patients_with_data) %>%
   left_join(milestone_row_counts, by = "patient_id") %>%
   left_join(seizure_row_counts, by = "patient_id") %>%
   left_join(med_row_counts, by = "patient_id") %>%
+  left_join(diary_row_counts, by = "patient_id") %>%
   mutate(
     n_milestone_rows = replace_na(n_milestone_rows, 0L),
     n_seizure_rows = replace_na(n_seizure_rows, 0L),
     n_med_rows = replace_na(n_med_rows, 0L),
+    n_diary_rows = replace_na(n_diary_rows, 0L),
+    n_app_usage_rows = 1L,
     n_no_skills_rows = if_else(
       patient_id %in% prospective_survey_completion$patient_id & n_milestone_rows == 0L,
       1L,
       0L
     ),
-    n_total_y_rows = n_milestone_rows + n_no_skills_rows + n_seizure_rows + n_med_rows
+    n_total_y_rows = n_milestone_rows + n_no_skills_rows + n_diary_rows + n_app_usage_rows + n_seizure_rows + n_med_rows
   )
 
 max_y_rows <- max(patient_row_slots$n_total_y_rows, na.rm = TRUE)
@@ -372,12 +491,13 @@ patient_names <- patients %>%
   group_by(patient_id) %>%
   summarise(patient_name = first(patient_name[patient_name != ""]), .groups = "drop")
 patient_names <- patient_names %>%
-  left_join(whatsapp_names, by = "patient_id") %>%
+  full_join(whatsapp_patient_metadata %>% select(patient_id, whatsapp_name, variant_p), by = "patient_id") %>%
   mutate(
     display_name = coalesce(whatsapp_name, patient_name),
-    display_name = if_else(is.na(display_name) | display_name == "", patient_id, display_name)
+    display_name = if_else(is.na(display_name) | display_name == "", patient_id, display_name),
+    variant_p = na_if(str_squish(as.character(variant_p)), "")
   ) %>%
-  select(patient_id, display_name)
+  select(patient_id, display_name, variant_p)
 
 patient_timeline_filenames <- patient_names %>%
   mutate(
@@ -424,10 +544,32 @@ milestone_summary <- milestone_intervals %>%
     milestone_last_date = max(end_date, na.rm = TRUE),
     .groups = "drop"
   )
+app_usage_summary <- app_usage_daily %>%
+  group_by(patient_id) %>%
+  summarise(
+    n_app_usage_days = n(),
+    app_usage_first_date = min(usage_date, na.rm = TRUE),
+    app_usage_last_date = max(usage_date, na.rm = TRUE),
+    .groups = "drop"
+  )
+diary_summary <- scn8a_diary_events %>%
+  group_by(patient_id) %>%
+  summarise(
+    n_diary_submissions = n(),
+    n_diary_all_yes = sum(diary_status == "All yes"),
+    n_diary_any_no = sum(diary_status == "Any no"),
+    diary_first_date = min(diary_date, na.rm = TRUE),
+    diary_last_date = max(diary_date, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 medications_missing_schedule <- medications_for_analysis %>%
   anti_join(med_intervals_raw %>% distinct(patient_id, medication_id), by = c("patient_id", "medication_id")) %>%
-  select(patient_id, medication_id, name, reason, treatment_type, intake_type, is_deleted, createdAt, updatedAt) %>%
+  select(
+    patient_id, medication_id, name, standardized_components, standardization_status,
+    requires_review, review_reason, reason, treatment_type, intake_type,
+    is_deleted, createdAt, updatedAt
+  ) %>%
   arrange(patient_id, name)
 
 medications_missing_schedule_summary <- medications_missing_schedule %>%
@@ -445,6 +587,8 @@ timeline_qc <- patient_order %>%
   left_join(med_summary, by = "patient_id") %>%
   left_join(med_schedule_summary_raw, by = "patient_id") %>%
   left_join(milestone_summary, by = "patient_id") %>%
+  left_join(app_usage_summary, by = "patient_id") %>%
+  left_join(diary_summary, by = "patient_id") %>%
   left_join(medications_missing_schedule_summary, by = "patient_id") %>%
   left_join(medication_refs_missing_metadata_summary, by = "patient_id") %>%
   mutate(
@@ -454,19 +598,23 @@ timeline_qc <- patient_order %>%
     n_medications = replace_na(n_medications, 0L),
     n_medications_ongoing = replace_na(n_medications_ongoing, 0L),
     n_milestones_achieved = replace_na(n_milestones_achieved, 0L),
+    n_app_usage_days = replace_na(n_app_usage_days, 0L),
+    n_diary_submissions = replace_na(n_diary_submissions, 0L),
+    n_diary_all_yes = replace_na(n_diary_all_yes, 0L),
+    n_diary_any_no = replace_na(n_diary_any_no, 0L),
     n_med_records_missing_schedule = replace_na(n_med_records_missing_schedule, 0L),
     n_med_refs_missing_metadata = replace_na(n_med_refs_missing_metadata, 0L)
   ) %>%
   rowwise() %>%
   mutate(
     timeline_start_date = {
-      dates <- c(seizure_first_date, med_start_min, med_schedule_start_min, milestone_first_date)
+      dates <- c(seizure_first_date, med_start_min, med_schedule_start_min, milestone_first_date, app_usage_first_date, diary_first_date)
       dates <- dates[!is.na(dates)]
       start_date <- if (length(dates) == 0) as.Date(NA) else min(dates)
       if (!is.na(app_activity_date)) max(start_date, app_activity_date) else start_date
     },
     timeline_end_date = {
-      dates <- c(seizure_last_date, med_end_max, med_start_max, med_schedule_start_max, med_schedule_end_max, milestone_last_date)
+      dates <- c(seizure_last_date, med_end_max, med_start_max, med_schedule_start_max, med_schedule_end_max, milestone_last_date, app_usage_last_date, diary_last_date)
       dates <- dates[!is.na(dates)]
       if (length(dates) == 0) as.Date(NA) else max(dates)
     }
@@ -485,15 +633,20 @@ readr::write_csv(medication_refs_missing_metadata, "output/tabs/helpilepsy_medic
 plot_patient_timeline <- function(pt_id) {
   pt_info <- patients %>% filter(patient_id == pt_id) %>% slice_head(n = 1)
   pt_name <- patient_names %>% filter(patient_id == pt_id) %>% pull(display_name) %>% first()
+  pt_variant <- patient_names %>% filter(patient_id == pt_id) %>% pull(variant_p) %>% first()
   if (is.na(pt_name) || pt_name == "") {
     pt_name <- str_trim(paste(pt_info$first_name, pt_info$last_name))
   }
-  title_text <- ifelse(is.na(pt_name) || pt_name == "", pt_id, paste0(pt_name, " (", pt_id, ")"))
+  variant_label <- ifelse(is.na(pt_variant) || pt_variant == "", "Unknown", pt_variant)
+  base_title <- ifelse(is.na(pt_name) || pt_name == "", pt_id, paste0(pt_name, " (", pt_id, ")"))
+  title_text <- paste0(base_title, " ", variant_label)
 
   pt_meds <- med_intervals %>% filter(patient_id == pt_id)
   pt_med_schedule <- med_schedule_summary_raw %>% filter(patient_id == pt_id) %>% slice_head(n = 1)
   pt_seizures <- seizure_events %>% filter(patient_id == pt_id)
   pt_milestones <- milestone_intervals %>% filter(patient_id == pt_id)
+  pt_app_usage <- app_usage_daily %>% filter(patient_id == pt_id)
+  pt_diary <- scn8a_diary_events %>% filter(patient_id == pt_id)
   pt_completed_prospective <- prospective_survey_completion %>% filter(patient_id == pt_id) %>%
     pull(patient_id) %>% length() > 0
   pt_entered_development_module <- development_module_answered %>% filter(patient_id == pt_id) %>%
@@ -507,6 +660,8 @@ plot_patient_timeline <- function(pt_id) {
     nrow(pt_meds) == 0 &&
       nrow(pt_seizures) == 0 &&
       nrow(pt_milestones) == 0 &&
+      nrow(pt_app_usage) == 0 &&
+      nrow(pt_diary) == 0 &&
       !show_no_skills_label &&
       !show_no_entered_skills_label
   ) {
@@ -522,12 +677,14 @@ plot_patient_timeline <- function(pt_id) {
       pt_meds$end_date, pt_meds$start_date,
       pt_med_schedule_start_max, pt_med_schedule_end_max,
       pt_seizures$event_date,
-      pt_milestones$start_date, pt_milestones$end_date
+      pt_milestones$start_date, pt_milestones$end_date,
+      pt_app_usage$usage_date,
+      pt_diary$diary_date
     ),
     na.rm = TRUE
   )
   earliest_date <- min(
-    c(pt_meds$start_date, pt_med_schedule_start_min, pt_seizures$event_date, pt_milestones$start_date),
+    c(pt_meds$start_date, pt_med_schedule_start_min, pt_seizures$event_date, pt_milestones$start_date, pt_app_usage$usage_date, pt_diary$diary_date),
     na.rm = TRUE
   )
   if (!is.na(pt_app_activity_date)) {
@@ -572,6 +729,44 @@ plot_patient_timeline <- function(pt_id) {
       seizure_label = if_else(is.na(seizure_label) | seizure_label == "", "Unspecified", seizure_label)
     ) %>%
     filter(event_date >= earliest_date, event_date <= plot_end_date)
+  pt_app_usage_daily <- tibble(usage_date = seq(earliest_date, plot_end_date, by = "day")) %>%
+    left_join(
+      pt_app_usage %>%
+        group_by(usage_date) %>%
+        summarise(
+          app_actions = as.integer(any(!is.na(app_actions) & app_actions > 0L)),
+          .groups = "drop"
+        ),
+      by = "usage_date"
+    ) %>%
+    mutate(
+      app_actions = coalesce(as.integer(app_actions), 0L),
+      app_usage_bin = as.character(app_actions),
+      app_usage_label = "App usage"
+    )
+  pt_diary <- pt_diary %>%
+    filter(diary_date >= earliest_date, diary_date <= plot_end_date) %>%
+    mutate(
+      diary_label = "Weekly Survey",
+      diary_dot_color = case_when(
+        diary_status == "All yes" ~ "#2E8B57",
+        diary_status == "Any no" ~ "#C80813",
+        TRUE ~ "#8A9197"
+      )
+    )
+  n_months_plotted <- length(seq(
+    floor_date(earliest_date, unit = "month"),
+    floor_date(plot_end_date, unit = "month"),
+    by = "1 month"
+  ))
+  if (n_months_plotted < 1) {
+    n_months_plotted <- 1L
+  }
+  avg_seizures_per_month <- nrow(pt_seizures) / n_months_plotted
+  avg_seizure_text <- sprintf(
+    "Average seizures/month: %.2f",
+    avg_seizures_per_month
+  )
 
   y_levels <- character(0)
   if (nrow(pt_milestones) > 0) {
@@ -584,6 +779,12 @@ plot_patient_timeline <- function(pt_id) {
     y_levels <- c(y_levels, "No skills")
   } else if (show_no_entered_skills_label) {
     y_levels <- c(y_levels, "No entered skills")
+  }
+  if (nrow(pt_app_usage_daily) > 0) {
+    y_levels <- c(y_levels, "App usage")
+  }
+  if (nrow(pt_diary) > 0) {
+    y_levels <- c(y_levels, "Weekly Survey")
   }
   if (nrow(pt_seizures) > 0) {
     seizure_levels <- pt_seizures %>% count(seizure_label, sort = TRUE) %>% pull(seizure_label)
@@ -602,6 +803,27 @@ plot_patient_timeline <- function(pt_id) {
         data = pt_meds,
         aes(x = start_plot_date, xend = end_plot_date, y = med_label, yend = med_label, color = med_status),
         linewidth = 2
+      )
+  }
+
+  if (nrow(pt_app_usage_daily) > 0) {
+    p <- p +
+      geom_tile(
+        data = pt_app_usage_daily,
+        aes(x = usage_date, y = app_usage_label, fill = app_usage_bin),
+        width = 0.95,
+        height = 0.8
+      )
+  }
+
+  if (nrow(pt_diary) > 0) {
+    p <- p +
+      geom_point(
+        data = pt_diary,
+        aes(x = diary_date, y = diary_label),
+        color = pt_diary$diary_dot_color,
+        size = 3,
+        alpha = 0.9
       )
   }
 
@@ -629,6 +851,10 @@ plot_patient_timeline <- function(pt_id) {
   p +
     scale_y_discrete(limits = y_levels) +
     scale_color_manual(values = c("Ongoing" = "#709AE1", "Ended" = "#8A9197"), drop = FALSE) +
+    scale_fill_manual(
+      values = c("0" = "#F2F4F7", "1" = "#3182BD"),
+      drop = FALSE
+    ) +
     scale_x_date(
       date_labels = "%b %Y",
       date_breaks = "1 month",
@@ -638,9 +864,11 @@ plot_patient_timeline <- function(pt_id) {
     ) +
     labs(
       title = title_text,
+      subtitle = avg_seizure_text,
       x = "Date",
       y = "",
-      color = "Medication Status"
+      color = "Medication Status",
+      fill = "App used/day"
     ) +
     theme_linedraw() +
     theme(

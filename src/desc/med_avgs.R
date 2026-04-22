@@ -6,6 +6,8 @@ suppressPackageStartupMessages({
   library(jsonlite)
 })
 
+source("src/desc/medication_standardization.R")
+
 current_date <- Sys.Date()
 analysis_end <- current_date
 
@@ -21,37 +23,14 @@ collapse_medication_names <- function(values) {
   }
 }
 
-normalize_deleted_flag <- function(x) {
-  if (is.logical(x)) {
-    return(tidyr::replace_na(x, FALSE))
-  }
-
-  normalized <- stringr::str_to_lower(stringr::str_trim(as.character(x)))
-  parsed <- dplyr::case_when(
-    normalized %in% c("true", "t", "1", "yes", "y") ~ TRUE,
-    normalized %in% c("false", "f", "0", "no", "n") ~ FALSE,
-    TRUE ~ NA
-  )
-  tidyr::replace_na(parsed, FALSE)
-}
-
-# Load medication data (restrict to epilepsy treatments)
-medications <- readr::read_csv("data/medications.csv", show_col_types = FALSE)
-if (!"is_deleted" %in% names(medications)) {
-  medications$is_deleted <- FALSE
-}
-medications$is_deleted <- normalize_deleted_flag(medications$is_deleted)
-
-medications <- medications %>%
+# Load medication data with standardized names
+medications <- readr::read_csv("data/medications.csv", show_col_types = FALSE) %>%
+  standardize_non_rescue_epilepsy_medications(include_non_drug = FALSE) %>%
   dplyr::mutate(
-    reason_clean = tolower(trimws(.data$reason))
-  ) %>%
-  dplyr::filter(!is.na(.data$reason_clean), .data$reason_clean == "epilepsy", !.data$is_deleted) %>%
-  dplyr::select(
-    medication_id,
     med_patient_id = .data$patient_id,
-    medication_name = .data$name
-  )
+    medication_name = .data$name_standardized
+  ) %>%
+  dplyr::select(.data$medication_id, .data$med_patient_id, .data$medication_name)
 
 # Load dosage data
 med_dosages_raw <- readr::read_csv("data/med_dosages.csv", show_col_types = FALSE) %>%
