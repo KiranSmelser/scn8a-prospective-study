@@ -7,19 +7,24 @@ suppressPackageStartupMessages({
 })
 
 INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
+CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 OUTPUT_DIR <- "output/tabs/modeling"
 COEFFICIENTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "mixed_effects_model_coefficients.csv")
 FIT_SUMMARY_OUTPUT_PATH <- file.path(OUTPUT_DIR, "mixed_effects_model_fit_summary.csv")
 DIAGNOSTICS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "mixed_effects_model_diagnostics.csv")
 RESIDUALS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "mixed_effects_model_residuals.csv")
+ZERO_CALIBRATION_BY_PATIENT_OUTPUT_PATH <- file.path(OUTPUT_DIR, "mixed_effects_model_zero_calibration_by_patient.csv")
+ZERO_CALIBRATION_BY_CLUSTER_OUTPUT_PATH <- file.path(OUTPUT_DIR, "mixed_effects_model_zero_calibration_by_cluster.csv")
 ZI_COEFFICIENTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "zero_inflated_mixed_effects_model_coefficients.csv")
 ZI_FIT_SUMMARY_OUTPUT_PATH <- file.path(OUTPUT_DIR, "zero_inflated_mixed_effects_model_fit_summary.csv")
 ZI_DIAGNOSTICS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "zero_inflated_mixed_effects_model_diagnostics.csv")
 ZI_RESIDUALS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "zero_inflated_mixed_effects_model_residuals.csv")
+ZI_ZERO_CALIBRATION_BY_PATIENT_OUTPUT_PATH <- file.path(OUTPUT_DIR, "zero_inflated_mixed_effects_model_zero_calibration_by_patient.csv")
+ZI_ZERO_CALIBRATION_BY_CLUSTER_OUTPUT_PATH <- file.path(OUTPUT_DIR, "zero_inflated_mixed_effects_model_zero_calibration_by_cluster.csv")
 MODEL_COMPARISON_OUTPUT_PATH <- file.path(OUTPUT_DIR, "mixed_effects_model_comparison.csv")
 
-MODEL_NAME <- "patient_month_mixed_effects_nb_main_effects"
-ZI_MODEL_NAME <- "patient_month_zero_inflated_mixed_effects_nb_main_effects"
+MODEL_NAME <- "patient_month_cluster_adjusted_mixed_effects_nb_main_effects"
+ZI_MODEL_NAME <- "patient_month_cluster_adjusted_covariate_informed_zero_inflated_mixed_effects_nb_main_effects"
 BASE_TERMS <- c(
   "month_index",
   "active_med_count",
@@ -36,7 +41,9 @@ MEDICATION_TERMS <- c(
   "med_exposed_zonisamide",
   "med_exposed_lamotrigine"
 )
-FIXED_EFFECT_TERMS <- c(BASE_TERMS, MEDICATION_TERMS)
+CLUSTER_TERMS <- c("pam_k3")
+FIXED_EFFECT_TERMS <- c(BASE_TERMS, MEDICATION_TERMS, CLUSTER_TERMS)
+NUMERIC_FIXED_EFFECT_TERMS <- c(BASE_TERMS, MEDICATION_TERMS)
 REQUIRED_COLUMNS <- c(
   "patient_id",
   "month",
@@ -52,7 +59,41 @@ if (!file.exists(INPUT_PATH)) {
   stop("Input file not found: ", INPUT_PATH)
 }
 
+if (!file.exists(CLUSTER_ASSIGNMENTS_INPUT_PATH)) {
+  stop("Cluster assignments file not found: ", CLUSTER_ASSIGNMENTS_INPUT_PATH)
+}
+
 patient_month_panel <- readr::read_csv(INPUT_PATH, show_col_types = FALSE)
+cluster_assignments <- readr::read_csv(CLUSTER_ASSIGNMENTS_INPUT_PATH, show_col_types = FALSE)
+
+cluster_required_columns <- c("patient_id", "pam_k3")
+missing_cluster_columns <- setdiff(cluster_required_columns, names(cluster_assignments))
+if (length(missing_cluster_columns) > 0) {
+  stop("Cluster assignments are missing required columns: ", paste(missing_cluster_columns, collapse = ", "))
+}
+
+cluster_lookup <- cluster_assignments %>%
+  dplyr::transmute(
+    patient_id = as.character(.data$patient_id),
+    pam_k3 = factor(as.character(.data$pam_k3), levels = c("1", "2", "3"))
+  ) %>%
+  dplyr::distinct(.data$patient_id, .keep_all = TRUE)
+
+patient_month_panel <- patient_month_panel %>%
+  dplyr::mutate(patient_id = as.character(.data$patient_id)) %>%
+  dplyr::left_join(cluster_lookup, by = "patient_id")
+
+patient_zero_rates <- patient_month_panel %>%
+  dplyr::mutate(seizure_count = suppressWarnings(as.numeric(.data$seizure_count))) %>%
+  dplyr::filter(!is.na(.data$seizure_count)) %>%
+  dplyr::group_by(.data$patient_id) %>%
+  dplyr::summarise(
+    patient_zero_rate = mean(.data$seizure_count == 0),
+    .groups = "drop"
+  )
+
+patient_month_panel <- patient_month_panel %>%
+  dplyr::left_join(patient_zero_rates, by = "patient_id")
 
 missing_columns <- setdiff(REQUIRED_COLUMNS, names(patient_month_panel))
 if (length(missing_columns) > 0) {
@@ -65,21 +106,29 @@ modeling_data <- patient_month_panel %>%
     month = as.Date(.data$month),
     study_start_date = as.Date(.data$study_start_date),
     study_end_date = as.Date(.data$study_end_date),
+    patient_zero_rate = suppressWarnings(as.numeric(.data$patient_zero_rate)),
     next_month_start = as.Date(format(.data$month + 32, "%Y-%m-01")),
     month_end = .data$next_month_start - 1,
     observed_start = as.Date(pmax(.data$study_start_date, .data$month), origin = "1970-01-01"),
     observed_end = as.Date(pmin(.data$study_end_date, .data$month_end), origin = "1970-01-01"),
     observed_days_in_month = pmax(as.integer(.data$observed_end - .data$observed_start + 1), 0L),
+    pam_k3 = factor(as.character(.data$pam_k3), levels = c("1", "2", "3")),
     across(
-      all_of(c("seizure_count", FIXED_EFFECT_TERMS)),
+      all_of(c("seizure_count", NUMERIC_FIXED_EFFECT_TERMS)),
       ~ suppressWarnings(as.numeric(.x))
     )
   ) %>%
-  dplyr::select(all_of(c(REQUIRED_COLUMNS, "observed_days_in_month"))) %>%
+  dplyr::select(all_of(c(REQUIRED_COLUMNS, "patient_zero_rate", "observed_days_in_month"))) %>%
   dplyr::filter(
     if_all(all_of(REQUIRED_COLUMNS), ~ !is.na(.x)),
+    !is.na(.data$patient_zero_rate),
     !is.na(.data$observed_days_in_month),
     .data$observed_days_in_month > 0
+  ) %>%
+  dplyr::mutate(
+    zi_month_index_scaled = as.numeric(scale(.data$month_index)),
+    zi_active_med_count_scaled = as.numeric(scale(.data$active_med_count)),
+    zi_patient_zero_rate_scaled = as.numeric(scale(.data$patient_zero_rate))
   )
 
 if (nrow(modeling_data) == 0) {
@@ -95,7 +144,7 @@ count_formula <- as.formula(
   )
 )
 
-zi_formula <- ~1
+zi_formula <- ~ zi_month_index_scaled + zi_active_med_count_scaled + pam_k3 + zi_patient_zero_rate_scaled
 
 build_coefficient_table <- function(model, include_zero_inflation = FALSE) {
   cond_table <- broom.mixed::tidy(
@@ -255,6 +304,7 @@ build_diagnostics_table <- function(model) {
 
 build_residuals_table <- function(model, modeling_data) {
   fitted_count <- predict(model, type = "response")
+  predicted_zero_probability <- predict_zero_probability(model)
   pearson_residual <- residuals(model, type = "pearson")
   model_family <- stats::family(model)$family
   deviance_residual <- if (grepl("^truncated_", model_family)) {
@@ -272,10 +322,65 @@ build_residuals_table <- function(model, modeling_data) {
       observed_seizures_per_day = .data$seizure_count / .data$observed_days_in_month,
       fitted_count = fitted_count,
       fitted_seizures_per_day = fitted_count / .data$observed_days_in_month,
+      predicted_zero_probability = predicted_zero_probability,
       pearson_residual = pearson_residual,
       deviance_residual = deviance_residual
     ) %>%
     dplyr::arrange(dplyr::desc(abs(.data$pearson_residual)))
+}
+
+predict_zero_probability <- function(model) {
+  conditional_mean <- predict(model, type = "conditional")
+  zero_inflation_probability <- predict(model, type = "zprob")
+  dispersion_parameter <- sigma(model)
+  conditional_zero_probability <- (dispersion_parameter / (dispersion_parameter + conditional_mean))^dispersion_parameter
+
+  zero_inflation_probability + (1 - zero_inflation_probability) * conditional_zero_probability
+}
+
+build_zero_calibration_by_patient <- function(model, modeling_data) {
+  predicted_zero_probability <- predict_zero_probability(model)
+
+  modeling_data %>%
+    dplyr::transmute(
+      patient_id = as.character(.data$patient_id),
+      pam_k3 = as.character(.data$pam_k3),
+      observed_zero = as.integer(.data$seizure_count == 0),
+      predicted_zero_probability = predicted_zero_probability
+    ) %>%
+    dplyr::group_by(.data$patient_id, .data$pam_k3) %>%
+    dplyr::summarise(
+      patient_months = dplyr::n(),
+      observed_zero_months = sum(.data$observed_zero),
+      expected_zero_months = sum(.data$predicted_zero_probability),
+      observed_zero_rate = mean(.data$observed_zero),
+      expected_zero_rate = mean(.data$predicted_zero_probability),
+      zero_month_difference = .data$observed_zero_months - .data$expected_zero_months,
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(abs(.data$zero_month_difference)))
+}
+
+build_zero_calibration_by_cluster <- function(model, modeling_data) {
+  predicted_zero_probability <- predict_zero_probability(model)
+
+  modeling_data %>%
+    dplyr::transmute(
+      pam_k3 = as.character(.data$pam_k3),
+      observed_zero = as.integer(.data$seizure_count == 0),
+      predicted_zero_probability = predicted_zero_probability
+    ) %>%
+    dplyr::group_by(.data$pam_k3) %>%
+    dplyr::summarise(
+      patient_months = dplyr::n(),
+      observed_zero_months = sum(.data$observed_zero),
+      expected_zero_months = sum(.data$predicted_zero_probability),
+      observed_zero_rate = mean(.data$observed_zero),
+      expected_zero_rate = mean(.data$predicted_zero_probability),
+      zero_month_difference = .data$observed_zero_months - .data$expected_zero_months,
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(.data$pam_k3)
 }
 
 z_critical <- stats::qnorm(0.975)
@@ -311,7 +416,7 @@ zi_model_fit_summary <- build_fit_summary(
   model_engine = "glmmTMB",
   family_label = "nbinom2",
   modeling_data = modeling_data,
-  zi_formula_label = deparse(zi_formula)
+  zi_formula_label = "~ scale(month_index) + scale(active_med_count) + pam_k3 + scale(patient_zero_rate)"
 )
 
 diagnostics_table <- build_diagnostics_table(mixed_effects_model)
@@ -319,6 +424,10 @@ zi_diagnostics_table <- build_diagnostics_table(zi_mixed_effects_model)
 
 residuals_table <- build_residuals_table(mixed_effects_model, modeling_data)
 zi_residuals_table <- build_residuals_table(zi_mixed_effects_model, modeling_data)
+zero_calibration_by_patient <- build_zero_calibration_by_patient(mixed_effects_model, modeling_data)
+zero_calibration_by_cluster <- build_zero_calibration_by_cluster(mixed_effects_model, modeling_data)
+zi_zero_calibration_by_patient <- build_zero_calibration_by_patient(zi_mixed_effects_model, modeling_data)
+zi_zero_calibration_by_cluster <- build_zero_calibration_by_cluster(zi_mixed_effects_model, modeling_data)
 
 model_comparison_table <- dplyr::bind_rows(model_fit_summary, zi_model_fit_summary) %>%
   dplyr::left_join(
@@ -339,8 +448,12 @@ readr::write_csv(coefficient_table, COEFFICIENTS_OUTPUT_PATH)
 readr::write_csv(model_fit_summary, FIT_SUMMARY_OUTPUT_PATH)
 readr::write_csv(diagnostics_table, DIAGNOSTICS_OUTPUT_PATH)
 readr::write_csv(residuals_table, RESIDUALS_OUTPUT_PATH)
+readr::write_csv(zero_calibration_by_patient, ZERO_CALIBRATION_BY_PATIENT_OUTPUT_PATH)
+readr::write_csv(zero_calibration_by_cluster, ZERO_CALIBRATION_BY_CLUSTER_OUTPUT_PATH)
 readr::write_csv(zi_coefficient_table, ZI_COEFFICIENTS_OUTPUT_PATH)
 readr::write_csv(zi_model_fit_summary, ZI_FIT_SUMMARY_OUTPUT_PATH)
 readr::write_csv(zi_diagnostics_table, ZI_DIAGNOSTICS_OUTPUT_PATH)
 readr::write_csv(zi_residuals_table, ZI_RESIDUALS_OUTPUT_PATH)
+readr::write_csv(zi_zero_calibration_by_patient, ZI_ZERO_CALIBRATION_BY_PATIENT_OUTPUT_PATH)
+readr::write_csv(zi_zero_calibration_by_cluster, ZI_ZERO_CALIBRATION_BY_CLUSTER_OUTPUT_PATH)
 readr::write_csv(model_comparison_table, MODEL_COMPARISON_OUTPUT_PATH)
