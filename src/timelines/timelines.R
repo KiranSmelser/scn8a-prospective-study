@@ -19,6 +19,14 @@ if (file.exists("output/figs/helpilepsy_timelines.pdf")) {
   invisible(file.remove("output/figs/helpilepsy_timelines.pdf"))
 }
 current_date <- Sys.Date()
+CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/patient_change_points.csv"
+CHANGE_POINT_REQUIRED_COLUMNS <- c(
+  "patient_id",
+  "candidate_week",
+  "pre_segment_start_date",
+  "post_segment_end_date",
+  "significant"
+)
 
 # Milestone labels (from Citizen timelines)
 milestone_labels <- c(
@@ -154,6 +162,44 @@ app_activity_dates <- jsonlite::fromJSON("data/patient_summary_metrics.json") %>
     patient_id,
     app_activity_date = parse_event_date(first_app_activity_createdAt)
   )
+
+change_point_markers <- if (file.exists(CHANGE_POINT_INPUT_PATH)) {
+  change_point_raw <- readr::read_csv(
+    CHANGE_POINT_INPUT_PATH,
+    col_types = readr::cols(.default = readr::col_guess(), patient_id = readr::col_character())
+  )
+  missing_change_point_columns <- setdiff(CHANGE_POINT_REQUIRED_COLUMNS, names(change_point_raw))
+  if (length(missing_change_point_columns) > 0) {
+    stop(
+      "Change-point output is missing required columns: ",
+      paste(missing_change_point_columns, collapse = ", ")
+    )
+  }
+
+  change_point_raw %>%
+    transmute(
+      patient_id = as.character(patient_id),
+      pre_segment_start_date = parse_event_date(pre_segment_start_date),
+      change_point_date = parse_event_date(candidate_week),
+      post_segment_end_date = parse_event_date(post_segment_end_date),
+      significant = str_to_lower(as.character(significant)) %in% c("true", "t", "1", "yes", "y")
+    ) %>%
+    filter(
+      significant,
+      !is.na(patient_id),
+      !is.na(pre_segment_start_date),
+      !is.na(change_point_date),
+      !is.na(post_segment_end_date)
+    ) %>%
+    distinct(patient_id, pre_segment_start_date, change_point_date, post_segment_end_date)
+} else {
+  tibble(
+    patient_id = character(),
+    pre_segment_start_date = as.Date(character()),
+    change_point_date = as.Date(character()),
+    post_segment_end_date = as.Date(character())
+  )
+}
 
 prospective_survey_completion <- surveys %>%
   mutate(
@@ -562,6 +608,15 @@ diary_summary <- scn8a_diary_events %>%
     diary_last_date = max(diary_date, na.rm = TRUE),
     .groups = "drop"
   )
+change_point_summary <- change_point_markers %>%
+  group_by(patient_id) %>%
+  summarise(
+    n_significant_change_points = n(),
+    change_point_first_date = min(change_point_date, na.rm = TRUE),
+    pre_segment_start_min = min(pre_segment_start_date, na.rm = TRUE),
+    post_segment_end_max = max(post_segment_end_date, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 medications_missing_schedule <- medications_for_analysis %>%
   anti_join(med_intervals_raw %>% distinct(patient_id, medication_id), by = c("patient_id", "medication_id")) %>%
@@ -589,6 +644,7 @@ timeline_qc <- patient_order %>%
   left_join(milestone_summary, by = "patient_id") %>%
   left_join(app_usage_summary, by = "patient_id") %>%
   left_join(diary_summary, by = "patient_id") %>%
+  left_join(change_point_summary, by = "patient_id") %>%
   left_join(medications_missing_schedule_summary, by = "patient_id") %>%
   left_join(medication_refs_missing_metadata_summary, by = "patient_id") %>%
   mutate(
@@ -602,19 +658,31 @@ timeline_qc <- patient_order %>%
     n_diary_submissions = replace_na(n_diary_submissions, 0L),
     n_diary_all_yes = replace_na(n_diary_all_yes, 0L),
     n_diary_any_no = replace_na(n_diary_any_no, 0L),
+    n_significant_change_points = replace_na(n_significant_change_points, 0L),
     n_med_records_missing_schedule = replace_na(n_med_records_missing_schedule, 0L),
     n_med_refs_missing_metadata = replace_na(n_med_refs_missing_metadata, 0L)
   ) %>%
   rowwise() %>%
   mutate(
     timeline_start_date = {
-      dates <- c(seizure_first_date, med_start_min, med_schedule_start_min, milestone_first_date, app_usage_first_date, diary_first_date)
+      dates <- c(
+        seizure_first_date, med_start_min, med_schedule_start_min, milestone_first_date,
+        app_usage_first_date, diary_first_date, pre_segment_start_min, change_point_first_date
+      )
       dates <- dates[!is.na(dates)]
       start_date <- if (length(dates) == 0) as.Date(NA) else min(dates)
-      if (!is.na(app_activity_date)) max(start_date, app_activity_date) else start_date
+      if (!is.na(app_activity_date) && n_significant_change_points == 0L) {
+        max(start_date, app_activity_date)
+      } else {
+        start_date
+      }
     },
     timeline_end_date = {
-      dates <- c(seizure_last_date, med_end_max, med_start_max, med_schedule_start_max, med_schedule_end_max, milestone_last_date, app_usage_last_date, diary_last_date)
+      dates <- c(
+        seizure_last_date, med_end_max, med_start_max, med_schedule_start_max,
+        med_schedule_end_max, milestone_last_date, app_usage_last_date,
+        diary_last_date, change_point_first_date, post_segment_end_max
+      )
       dates <- dates[!is.na(dates)]
       if (length(dates) == 0) as.Date(NA) else max(dates)
     }
@@ -647,6 +715,7 @@ plot_patient_timeline <- function(pt_id) {
   pt_milestones <- milestone_intervals %>% filter(patient_id == pt_id)
   pt_app_usage <- app_usage_daily %>% filter(patient_id == pt_id)
   pt_diary <- scn8a_diary_events %>% filter(patient_id == pt_id)
+  pt_change_points <- change_point_markers %>% filter(patient_id == pt_id)
   pt_completed_prospective <- prospective_survey_completion %>% filter(patient_id == pt_id) %>%
     pull(patient_id) %>% length() > 0
   pt_entered_development_module <- development_module_answered %>% filter(patient_id == pt_id) %>%
@@ -662,6 +731,7 @@ plot_patient_timeline <- function(pt_id) {
       nrow(pt_milestones) == 0 &&
       nrow(pt_app_usage) == 0 &&
       nrow(pt_diary) == 0 &&
+      nrow(pt_change_points) == 0 &&
       !show_no_skills_label &&
       !show_no_entered_skills_label
   ) {
@@ -679,15 +749,22 @@ plot_patient_timeline <- function(pt_id) {
       pt_seizures$event_date,
       pt_milestones$start_date, pt_milestones$end_date,
       pt_app_usage$usage_date,
-      pt_diary$diary_date
+      pt_diary$diary_date,
+      pt_change_points$pre_segment_start_date,
+      pt_change_points$change_point_date,
+      pt_change_points$post_segment_end_date
     ),
     na.rm = TRUE
   )
   earliest_date <- min(
-    c(pt_meds$start_date, pt_med_schedule_start_min, pt_seizures$event_date, pt_milestones$start_date, pt_app_usage$usage_date, pt_diary$diary_date),
+    c(
+      pt_meds$start_date, pt_med_schedule_start_min, pt_seizures$event_date,
+      pt_milestones$start_date, pt_app_usage$usage_date, pt_diary$diary_date,
+      pt_change_points$pre_segment_start_date, pt_change_points$change_point_date
+    ),
     na.rm = TRUE
   )
-  if (!is.na(pt_app_activity_date)) {
+  if (!is.na(pt_app_activity_date) && nrow(pt_change_points) == 0) {
     earliest_date <- max(earliest_date, pt_app_activity_date, na.rm = TRUE)
   }
 
@@ -702,6 +779,13 @@ plot_patient_timeline <- function(pt_id) {
   if (earliest_date > plot_end_date) {
     earliest_date <- plot_end_date - 30
   }
+  pt_segment_boundary_markers <- pt_change_points %>%
+    transmute(marker_date = pre_segment_start_date) %>%
+    bind_rows(pt_change_points %>% transmute(marker_date = post_segment_end_date)) %>%
+    filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
+  pt_change_point_markers <- pt_change_points %>%
+    transmute(marker_date = change_point_date) %>%
+    filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
 
   pt_meds <- pt_meds %>%
     mutate(
@@ -845,6 +929,28 @@ plot_patient_timeline <- function(pt_id) {
         aes(x = start_date, xend = end_date, y = milestone_label, yend = milestone_label),
         color = "#1A9993",
         linewidth = 2
+      )
+  }
+
+  if (nrow(pt_segment_boundary_markers) > 0) {
+    p <- p +
+      geom_vline(
+        data = pt_segment_boundary_markers,
+        aes(xintercept = marker_date),
+        color = "#8A9197",
+        linewidth = 0.6,
+        alpha = 0.55
+      )
+  }
+
+  if (nrow(pt_change_point_markers) > 0) {
+    p <- p +
+      geom_vline(
+        data = pt_change_point_markers,
+        aes(xintercept = marker_date),
+        color = "#C80813",
+        linewidth = 0.8,
+        alpha = 0.7
       )
   }
 

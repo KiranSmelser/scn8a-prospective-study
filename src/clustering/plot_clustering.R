@@ -2,12 +2,14 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(ggplot2)
   library(ggrepel)
+  library(lubridate)
   library(readr)
   library(tidyr)
 })
 
 FEATURES_INPUT_PATH <- "output/tabs/clustering/seizure_freq_features.csv"
 ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
+SEIZURES_INPUT_PATH <- "output/tabs/seizures/seizures.csv"
 OUTPUT_FIG_DIR <- "output/figs/clustering"
 
 RATE_FEATURES <- c(
@@ -31,6 +33,10 @@ if (!file.exists(ASSIGNMENTS_INPUT_PATH)) {
   stop("Assignment input file not found: ", ASSIGNMENTS_INPUT_PATH)
 }
 
+if (!file.exists(SEIZURES_INPUT_PATH)) {
+  stop("Seizure input file not found: ", SEIZURES_INPUT_PATH)
+}
+
 robust_scale <- function(x) {
   center <- stats::median(x, na.rm = TRUE)
   spread <- stats::IQR(x, na.rm = TRUE)
@@ -44,6 +50,16 @@ robust_scale <- function(x) {
   }
 
   (x - center) / spread
+}
+
+parse_event_datetime <- function(x) {
+  parsed <- suppressWarnings(lubridate::ymd_hms(x, tz = "UTC"))
+  parsed <- dplyr::if_else(
+    is.na(parsed),
+    suppressWarnings(as.POSIXct(lubridate::ymd(x), tz = "UTC")),
+    parsed
+  )
+  parsed
 }
 
 features <- readr::read_csv(FEATURES_INPUT_PATH, show_col_types = FALSE) %>%
@@ -150,20 +166,50 @@ boxplot_data <- features %>%
   filter(!is.na(.data$pam_k3)) %>%
   mutate(pam_k3 = factor(.data$pam_k3, levels = c("1", "2", "3")))
 
+interseizure_intervals <- readr::read_csv(SEIZURES_INPUT_PATH, show_col_types = FALSE) %>%
+  transmute(
+    patient_id = as.character(.data$patient_id),
+    event_datetime = parse_event_datetime(.data$date)
+  ) %>%
+  filter(!is.na(.data$patient_id), !is.na(.data$event_datetime)) %>%
+  arrange(.data$patient_id, .data$event_datetime) %>%
+  group_by(.data$patient_id) %>%
+  mutate(
+    days_since_previous_seizure = as.numeric(
+      difftime(.data$event_datetime, lag(.data$event_datetime), units = "days")
+    )
+  ) %>%
+  summarise(
+    mean_interseizure_interval_days = mean(.data$days_since_previous_seizure, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(is.finite(.data$mean_interseizure_interval_days))
+
+boxplot_data <- boxplot_data %>%
+  left_join(interseizure_intervals, by = "patient_id")
+
 feature_plot_specs <- tibble::tribble(
   ~feature_name, ~plot_label, ~y_label, ~filename,
   "mean_monthly_seizure_rate", "Mean Monthly Seizure Rate", "Mean seizures per month", "boxplot_mean_seizure_rate.png",
   "iqr_monthly_seizure_rate", "IQR of Monthly Seizure Rate", "IQR of seizures per month", "boxplot_iqr.png",
-  "proportion_zero_seizure_months", "Proportion of Zero-Seizure Months", "Proportion of months with zero seizures", "boxplot_zero_seizure_months.png"
+  "proportion_zero_seizure_months", "Proportion of Zero-Seizure Months", "Proportion of months with zero seizures", "boxplot_zero_seizure_months.png",
+  "mean_interseizure_interval_days", "Time Between Seizures", "Mean days between seizures", "boxplot_mean_seizure_gaps.png"
 )
 
 for (i in seq_len(nrow(feature_plot_specs))) {
   spec <- feature_plot_specs[i, ]
   feature_name <- as.character(spec$feature_name[[1]])
   feature_sym <- rlang::sym(feature_name)
+  plot_data <- boxplot_data %>%
+    filter(!is.na(.data[[feature_name]]))
+
+  if (dplyr::n_distinct(plot_data$pam_k3) < 2) {
+    warning("Skipping ", feature_name, ": fewer than 2 clusters with non-missing values.")
+    next
+  }
 
   p_box <- ggstatsplot::ggbetweenstats(
-    data = boxplot_data,
+    data = plot_data,
     x = pam_k3,
     y = !!feature_sym,
     type = "np",
