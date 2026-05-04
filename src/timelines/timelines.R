@@ -23,8 +23,6 @@ CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/patient_change_points.csv"
 CHANGE_POINT_REQUIRED_COLUMNS <- c(
   "patient_id",
   "candidate_week",
-  "pre_segment_start_date",
-  "post_segment_end_date",
   "significant"
 )
 
@@ -75,6 +73,28 @@ parse_yes_no <- function(x) {
     normalized %in% c("no", "n", "false", "0") ~ "no",
     TRUE ~ NA_character_
   )
+}
+
+parse_change_point_flag <- function(x) {
+  str_to_lower(str_squish(as.character(x))) %in% c("true", "t", "1", "yes", "y")
+}
+
+change_point_date_column <- function(data, column_name) {
+  if (column_name %in% names(data)) {
+    parse_event_date(data[[column_name]])
+  } else {
+    as.Date(rep(NA, nrow(data)))
+  }
+}
+
+min_date_or_na <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) as.Date(NA) else min(x)
+}
+
+max_date_or_na <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) as.Date(NA) else max(x)
 }
 
 # Merge overlapping medication intervals
@@ -179,19 +199,17 @@ change_point_markers <- if (file.exists(CHANGE_POINT_INPUT_PATH)) {
   change_point_raw %>%
     transmute(
       patient_id = as.character(patient_id),
-      pre_segment_start_date = parse_event_date(pre_segment_start_date),
       change_point_date = parse_event_date(candidate_week),
-      post_segment_end_date = parse_event_date(post_segment_end_date),
-      significant = str_to_lower(as.character(significant)) %in% c("true", "t", "1", "yes", "y")
+      pre_segment_start_date = change_point_date_column(change_point_raw, "pre_segment_start_date"),
+      post_segment_end_date = change_point_date_column(change_point_raw, "post_segment_end_date"),
+      significant = parse_change_point_flag(significant)
     ) %>%
     filter(
       significant,
       !is.na(patient_id),
-      !is.na(pre_segment_start_date),
-      !is.na(change_point_date),
-      !is.na(post_segment_end_date)
+      !is.na(change_point_date)
     ) %>%
-    distinct(patient_id, pre_segment_start_date, change_point_date, post_segment_end_date)
+    distinct(patient_id, change_point_date, pre_segment_start_date, post_segment_end_date)
 } else {
   tibble(
     patient_id = character(),
@@ -612,9 +630,9 @@ change_point_summary <- change_point_markers %>%
   group_by(patient_id) %>%
   summarise(
     n_significant_change_points = n(),
-    change_point_first_date = min(change_point_date, na.rm = TRUE),
-    pre_segment_start_min = min(pre_segment_start_date, na.rm = TRUE),
-    post_segment_end_max = max(post_segment_end_date, na.rm = TRUE),
+    change_point_first_date = min_date_or_na(change_point_date),
+    pre_segment_start_min = min_date_or_na(pre_segment_start_date),
+    post_segment_end_max = max_date_or_na(post_segment_end_date),
     .groups = "drop"
   )
 
@@ -779,10 +797,6 @@ plot_patient_timeline <- function(pt_id) {
   if (earliest_date > plot_end_date) {
     earliest_date <- plot_end_date - 30
   }
-  pt_segment_boundary_markers <- pt_change_points %>%
-    transmute(marker_date = pre_segment_start_date) %>%
-    bind_rows(pt_change_points %>% transmute(marker_date = post_segment_end_date)) %>%
-    filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
   pt_change_point_markers <- pt_change_points %>%
     transmute(marker_date = change_point_date) %>%
     filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
@@ -929,17 +943,6 @@ plot_patient_timeline <- function(pt_id) {
         aes(x = start_date, xend = end_date, y = milestone_label, yend = milestone_label),
         color = "#1A9993",
         linewidth = 2
-      )
-  }
-
-  if (nrow(pt_segment_boundary_markers) > 0) {
-    p <- p +
-      geom_vline(
-        data = pt_segment_boundary_markers,
-        aes(xintercept = marker_date),
-        color = "#8A9197",
-        linewidth = 0.6,
-        alpha = 0.55
       )
   }
 

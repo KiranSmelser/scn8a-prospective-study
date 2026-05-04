@@ -1,4 +1,4 @@
-# Change-point analysis for patient seizure frequency.
+# Joint multiple-change-point analysis for patient seizure frequency.
 
 suppressPackageStartupMessages({
   library(readr)
@@ -15,17 +15,25 @@ OUTPUT_DIR <- "output/tabs/changepoints"
 CANDIDATES_OUTPUT_PATH <- file.path(OUTPUT_DIR, "change_point_candidates.csv")
 PATIENT_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_change_points.csv")
 SEGMENTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "change_point_segments.csv")
+LEGACY_BINARY_OUTPUT_PATHS <- file.path(
+  OUTPUT_DIR,
+  c("binary_segmentation_change_points.csv", "binary_segmentation_segments.csv")
+)
 PANEL_REQUIRED_COLUMNS <- c("patient_id", "study_start_date", "study_end_date", "month", "seizure_count")
 SEIZURE_REQUIRED_COLUMNS <- c("patient_id", "date")
 
-MIN_TOTAL_SEIZURES <- 1L
-MIN_SEGMENT_WEEKS <- 4L
-MIN_SEGMENT_OBSERVED_DAYS <- 28L
+MIN_TOTAL_SEIZURES <- as.integer(Sys.getenv("CHANGEPOINT_MIN_TOTAL_SEIZURES", "1"))
+MIN_SEGMENT_WEEKS <- as.integer(Sys.getenv("CHANGEPOINT_MIN_SEGMENT_WEEKS", "4"))
+MIN_SEGMENT_OBSERVED_DAYS <- as.integer(Sys.getenv("CHANGEPOINT_MIN_SEGMENT_OBSERVED_DAYS", "28"))
+MAX_CHANGEPOINTS <- as.integer(Sys.getenv("CHANGEPOINT_MAX_CHANGEPOINTS", "4"))
 BOOTSTRAP_REPLICATES <- as.integer(Sys.getenv("CHANGEPOINT_BOOTSTRAPS", "500"))
+SEGMENT_PENALTY_MULTIPLIER <- as.numeric(Sys.getenv("CHANGEPOINT_SEGMENT_PENALTY_MULTIPLIER", "2"))
+POISSON_LIMIT_THETA <- as.numeric(Sys.getenv("CHANGEPOINT_POISSON_LIMIT_THETA", "1000000"))
 RANDOM_SEED <- 20260430L
 ALPHA <- 0.05
 
 dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
+invisible(file.remove(LEGACY_BINARY_OUTPUT_PATHS[file.exists(LEGACY_BINARY_OUTPUT_PATHS)]))
 
 if (!file.exists(PANEL_INPUT_PATH)) {
   stop("Input file not found: ", PANEL_INPUT_PATH)
@@ -44,22 +52,6 @@ parse_event_date <- function(x) {
 safe_glm_nb <- function(formula, data) {
   tryCatch(
     suppressWarnings(MASS::glm.nb(formula = formula, data = data, control = glm.control(maxit = 100))),
-    error = function(...) NULL
-  )
-}
-
-safe_glm_nb_fixed_theta <- function(formula, data, theta) {
-  if (!is.finite(theta) || theta <= 0) {
-    return(NULL)
-  }
-
-  tryCatch(
-    suppressWarnings(stats::glm(
-      formula = formula,
-      data = data,
-      family = MASS::negative.binomial(theta = theta),
-      control = glm.control(maxit = 100)
-    )),
     error = function(...) NULL
   )
 }
@@ -128,16 +120,88 @@ summarise_segment <- function(data, segment_label) {
   )
 }
 
-candidate_summary <- function(weekly_data, candidate_week) {
-  pre_data <- weekly_data %>% dplyr::filter(.data$week < candidate_week)
-  post_data <- weekly_data %>% dplyr::filter(.data$week >= candidate_week)
+estimate_patient_theta <- function(weekly_data) {
+  model_data <- weekly_data %>%
+    dplyr::mutate(log_observed_days = log(.data$observed_days))
 
+  null_model <- safe_glm_nb(
+    seizure_count ~ 1 + offset(log_observed_days),
+    data = model_data
+  )
+
+  if (is.null(null_model) || !is.finite(null_model$theta) || null_model$theta <= 0) {
+    return(tibble::tibble(
+      theta = POISSON_LIMIT_THETA,
+      theta_status = "negative_binomial_theta_fit_failed_poisson_limit"
+    ))
+  }
+
+  tibble::tibble(
+    theta = as.numeric(null_model$theta),
+    theta_status = "ok"
+  )
+}
+
+segment_log_likelihood <- function(seizure_count, observed_days, theta) {
+  seizure_count <- as.integer(seizure_count)
+  observed_days <- as.numeric(observed_days)
+
+  if (!is.finite(theta) || theta <= 0 || any(!is.finite(observed_days)) || any(observed_days <= 0)) {
+    return(NA_real_)
+  }
+
+  total_seizures <- sum(seizure_count)
+  total_days <- sum(observed_days)
+  if (total_days <= 0) {
+    return(NA_real_)
+  }
+
+  if (total_seizures == 0) {
+    return(0)
+  }
+
+  rate_per_day <- total_seizures / total_days
+  mu <- rate_per_day * observed_days
+  sum(stats::dnbinom(seizure_count, size = theta, mu = mu, log = TRUE))
+}
+
+candidate_split_indices <- function(weekly_data) {
+  n <- nrow(weekly_data)
+  if (n < 2 * MIN_SEGMENT_WEEKS) {
+    return(integer())
+  }
+
+  starts <- 2:n
+  starts[purrr::map_lgl(starts, function(split_start) {
+    pre_data <- weekly_data[seq_len(split_start - 1L), , drop = FALSE]
+    post_data <- weekly_data[split_start:n, , drop = FALSE]
+
+    nrow(pre_data) >= MIN_SEGMENT_WEEKS &&
+      nrow(post_data) >= MIN_SEGMENT_WEEKS &&
+      sum(pre_data$observed_days) >= MIN_SEGMENT_OBSERVED_DAYS &&
+      sum(post_data$observed_days) >= MIN_SEGMENT_OBSERVED_DAYS
+  })]
+}
+
+candidate_summary <- function(weekly_data, split_start, theta, null_log_likelihood) {
+  n <- nrow(weekly_data)
+  pre_data <- weekly_data[seq_len(split_start - 1L), , drop = FALSE]
+  post_data <- weekly_data[split_start:n, , drop = FALSE]
   pre <- summarise_segment(pre_data, "pre")
   post <- summarise_segment(post_data, "post")
+  pre_log_likelihood <- segment_log_likelihood(pre_data$seizure_count, pre_data$observed_days, theta)
+  post_log_likelihood <- segment_log_likelihood(post_data$seizure_count, post_data$observed_days, theta)
+  alternative_log_likelihood <- pre_log_likelihood + post_log_likelihood
+  lrt_statistic <- ifelse(
+    is.finite(null_log_likelihood) && is.finite(alternative_log_likelihood),
+    max(0, 2 * (alternative_log_likelihood - null_log_likelihood)),
+    NA_real_
+  )
 
   tibble::tibble(
     patient_id = weekly_data$patient_id[[1]],
-    candidate_week = candidate_week,
+    candidate_week = weekly_data$week[[split_start]],
+    candidate_week_index = split_start,
     pre_segment_start_date = pre$segment_start_date,
     pre_segment_end_date = pre$segment_end_date,
     post_segment_start_date = post$segment_start_date,
@@ -160,79 +224,23 @@ candidate_summary <- function(weekly_data, candidate_week) {
       .data$rate_ratio_post_vs_pre > 1 ~ "increase",
       .data$rate_ratio_post_vs_pre < 1 ~ "decrease",
       TRUE ~ "no_change"
-    )
+    ),
+    lrt_statistic = lrt_statistic,
+    raw_p_value = stats::pchisq(lrt_statistic, df = 1, lower.tail = FALSE),
+    model_status = ifelse(is.finite(lrt_statistic), "ok", "likelihood_failed"),
+    theta = theta,
+    total_weeks = n
   )
 }
 
-candidate_weeks_for_patient <- function(weekly_data) {
-  weekly_data %>%
-    dplyr::filter(
-      .data$week_index > MIN_SEGMENT_WEEKS,
-      .data$week_index <= max(.data$week_index) - MIN_SEGMENT_WEEKS + 1L
-    ) %>%
-    dplyr::pull(.data$week) %>%
-    purrr::keep(function(candidate_week) {
-      pre_days <- weekly_data %>%
-        dplyr::filter(.data$week < candidate_week) %>%
-        dplyr::summarise(observed_days = sum(.data$observed_days), .groups = "drop") %>%
-        dplyr::pull(.data$observed_days)
-      post_days <- weekly_data %>%
-        dplyr::filter(.data$week >= candidate_week) %>%
-        dplyr::summarise(observed_days = sum(.data$observed_days), .groups = "drop") %>%
-        dplyr::pull(.data$observed_days)
+scan_patient_candidates <- function(weekly_data, theta) {
+  split_indices <- candidate_split_indices(weekly_data)
 
-      pre_days >= MIN_SEGMENT_OBSERVED_DAYS && post_days >= MIN_SEGMENT_OBSERVED_DAYS
-    })
-}
-
-scan_candidate <- function(weekly_data, candidate_week, null_log_likelihood, theta) {
-  model_data <- weekly_data %>%
-    dplyr::mutate(
-      post_change = as.integer(.data$week >= candidate_week),
-      log_observed_days = log(.data$observed_days)
-    )
-
-  alternative_model <- safe_glm_nb_fixed_theta(
-    seizure_count ~ post_change + offset(log_observed_days),
-    data = model_data,
-    theta = theta
-  )
-
-  candidate_stats <- candidate_summary(weekly_data, candidate_week)
-
-  if (!is.finite(null_log_likelihood) || is.null(alternative_model)) {
-    return(
-      candidate_stats %>%
-        dplyr::mutate(
-          lrt_statistic = NA_real_,
-          raw_p_value = NA_real_,
-          model_status = dplyr::if_else(
-            is.finite(null_log_likelihood),
-            "alternative_negative_binomial_fit_failed",
-            "null_negative_binomial_fit_failed"
-          )
-        )
-    )
-  }
-
-  lrt_statistic <- max(0, 2 * (as.numeric(stats::logLik(alternative_model)) - null_log_likelihood))
-  raw_p_value <- stats::pchisq(lrt_statistic, df = 1, lower.tail = FALSE)
-
-  candidate_stats %>%
-    dplyr::mutate(
-      lrt_statistic = lrt_statistic,
-      raw_p_value = raw_p_value,
-      model_status = "ok"
-    )
-}
-
-scan_patient <- function(weekly_data) {
-  candidate_weeks <- candidate_weeks_for_patient(weekly_data)
-
-  if (length(candidate_weeks) == 0) {
+  if (length(split_indices) == 0) {
     return(tibble::tibble(
       patient_id = weekly_data$patient_id[[1]],
       candidate_week = as.Date(character()),
+      candidate_week_index = integer(),
       pre_segment_start_date = as.Date(character()),
       pre_segment_end_date = as.Date(character()),
       post_segment_start_date = as.Date(character()),
@@ -249,181 +257,365 @@ scan_patient <- function(weekly_data) {
       direction = character(),
       lrt_statistic = numeric(),
       raw_p_value = numeric(),
-      model_status = character()
+      model_status = character(),
+      theta = numeric(),
+      total_weeks = integer()
     ))
   }
 
-  model_data <- weekly_data %>%
-    dplyr::mutate(log_observed_days = log(.data$observed_days))
-
-  null_model <- safe_glm_nb(
-    seizure_count ~ 1 + offset(log_observed_days),
-    data = model_data
-  )
-  theta <- if (is.null(null_model)) NA_real_ else null_model$theta
-  null_fixed_model <- safe_glm_nb_fixed_theta(
-    seizure_count ~ 1 + offset(log_observed_days),
-    data = model_data,
-    theta = theta
-  )
-  null_log_likelihood <- if (is.null(null_fixed_model)) NA_real_ else as.numeric(stats::logLik(null_fixed_model))
-
-  purrr::map_dfr(candidate_weeks, ~ scan_candidate(weekly_data, .x, null_log_likelihood, theta))
+  null_log_likelihood <- segment_log_likelihood(weekly_data$seizure_count, weekly_data$observed_days, theta)
+  purrr::map_dfr(split_indices, ~ candidate_summary(weekly_data, .x, theta, null_log_likelihood))
 }
 
-max_lrt_for_counts <- function(seizure_count, base_weekly_data, candidate_weeks, theta) {
-  simulated_data <- base_weekly_data %>%
-    dplyr::mutate(
-      seizure_count = as.integer(.env$seizure_count),
-      log_observed_days = log(.data$observed_days)
-    )
+build_interval_costs <- function(weekly_data, theta) {
+  n <- nrow(weekly_data)
+  cost <- matrix(Inf, nrow = n, ncol = n)
+  log_likelihood <- matrix(NA_real_, nrow = n, ncol = n)
 
-  null_model <- safe_glm_nb_fixed_theta(
-    seizure_count ~ 1 + offset(log_observed_days),
-    data = simulated_data,
-    theta = theta
+  for (segment_start in seq_len(n)) {
+    for (segment_end in segment_start:n) {
+      segment_data <- weekly_data[segment_start:segment_end, , drop = FALSE]
+      if (
+        nrow(segment_data) >= MIN_SEGMENT_WEEKS &&
+          sum(segment_data$observed_days) >= MIN_SEGMENT_OBSERVED_DAYS
+      ) {
+        ll <- segment_log_likelihood(segment_data$seizure_count, segment_data$observed_days, theta)
+        if (is.finite(ll)) {
+          log_likelihood[segment_start, segment_end] <- ll
+          cost[segment_start, segment_end] <- -2 * ll
+        }
+      }
+    }
+  }
+
+  list(cost = cost, log_likelihood = log_likelihood)
+}
+
+select_joint_segmentation <- function(weekly_data, theta) {
+  n <- nrow(weekly_data)
+  interval_costs <- build_interval_costs(weekly_data, theta)
+  cost <- interval_costs$cost
+
+  if (!is.finite(cost[1, n])) {
+    return(list(
+      status = "insufficient_timeline_for_joint_segmentation",
+      starts = 1L,
+      ends = n,
+      n_segments = 1L,
+      n_change_points = 0L,
+      null_cost = NA_real_,
+      selected_cost = NA_real_,
+      selected_objective = NA_real_,
+      penalty_per_segment = NA_real_,
+      interval_costs = interval_costs
+    ))
+  }
+
+  max_segments <- min(MAX_CHANGEPOINTS + 1L, n)
+  penalty_per_segment <- SEGMENT_PENALTY_MULTIPLIER * log(n)
+  dp <- matrix(Inf, nrow = max_segments, ncol = n)
+  backtrack <- matrix(NA_integer_, nrow = max_segments, ncol = n)
+
+  for (segment_end in seq_len(n)) {
+    if (is.finite(cost[1, segment_end])) {
+      dp[1, segment_end] <- cost[1, segment_end]
+      backtrack[1, segment_end] <- 1L
+    }
+  }
+
+  if (max_segments >= 2L) {
+    for (k in 2:max_segments) {
+      for (segment_end in seq_len(n)) {
+        if (segment_end < 2L) {
+          next
+        }
+
+        possible_starts <- 2:segment_end
+        possible_starts <- possible_starts[
+          is.finite(cost[possible_starts, segment_end]) &
+            is.finite(dp[k - 1L, possible_starts - 1L])
+        ]
+
+        if (length(possible_starts) > 0) {
+          objectives <- dp[k - 1L, possible_starts - 1L] + cost[possible_starts, segment_end]
+          best_index <- which.min(objectives)
+          dp[k, segment_end] <- objectives[[best_index]]
+          backtrack[k, segment_end] <- possible_starts[[best_index]]
+        }
+      }
+    }
+  }
+
+  available_segments <- which(is.finite(dp[, n]))
+  objectives <- dp[available_segments, n] + available_segments * penalty_per_segment
+  selected_k <- available_segments[[which.min(objectives)]]
+
+  starts <- integer(selected_k)
+  ends <- integer(selected_k)
+  current_end <- n
+  for (k in seq(from = selected_k, to = 1L)) {
+    current_start <- backtrack[k, current_end]
+    starts[[k]] <- current_start
+    ends[[k]] <- current_end
+    current_end <- current_start - 1L
+  }
+
+  list(
+    status = "ok",
+    starts = starts,
+    ends = ends,
+    n_segments = selected_k,
+    n_change_points = selected_k - 1L,
+    null_cost = dp[1, n],
+    selected_cost = dp[selected_k, n],
+    selected_objective = dp[selected_k, n] + selected_k * penalty_per_segment,
+    penalty_per_segment = penalty_per_segment,
+    interval_costs = interval_costs
   )
+}
 
-  if (is.null(null_model)) {
+build_segment_table <- function(weekly_data, segmentation, theta, theta_status) {
+  purrr::map2_dfr(segmentation$starts, segmentation$ends, function(segment_start, segment_end) {
+    segment_data <- weekly_data[segment_start:segment_end, , drop = FALSE]
+    segment_summary <- summarise_segment(segment_data, "selected")
+    segment_log_likelihood_value <- segment_log_likelihood(segment_data$seizure_count, segment_data$observed_days, theta)
+
+    tibble::tibble(
+      patient_id = weekly_data$patient_id[[1]],
+      segment_id = which(segmentation$starts == segment_start & segmentation$ends == segment_end)[[1]],
+      segment_start_week_index = segment_start,
+      segment_end_week_index = segment_end,
+      segment_start_date = segment_summary$segment_start_date,
+      segment_end_date = segment_summary$segment_end_date,
+      weeks = segment_summary$weeks,
+      observed_days = segment_summary$observed_days,
+      seizure_count = segment_summary$seizure_count,
+      rate_per_30_days = segment_summary$rate_per_30_days,
+      log_likelihood = segment_log_likelihood_value,
+      theta = theta,
+      theta_status = theta_status,
+      n_model_segments = segmentation$n_segments,
+      n_model_change_points = segmentation$n_change_points,
+      null_cost = segmentation$null_cost,
+      selected_cost = segmentation$selected_cost,
+      selected_objective = segmentation$selected_objective,
+      penalty_per_segment = segmentation$penalty_per_segment,
+      segmentation_status = segmentation$status
+    )
+  })
+}
+
+best_local_lrt_for_counts <- function(seizure_count, observed_days, theta) {
+  n <- length(seizure_count)
+  null_log_likelihood <- segment_log_likelihood(seizure_count, observed_days, theta)
+  if (!is.finite(null_log_likelihood)) {
     return(NA_real_)
   }
 
-  null_log_likelihood <- as.numeric(stats::logLik(null_model))
-  lrt_statistics <- purrr::map_dbl(candidate_weeks, function(candidate_week) {
-    candidate_data <- simulated_data %>%
-      dplyr::mutate(post_change = as.integer(.data$week >= candidate_week))
+  split_starts <- 2:n
+  split_starts <- split_starts[purrr::map_lgl(split_starts, function(split_start) {
+    pre_weeks <- split_start - 1L
+    post_weeks <- n - split_start + 1L
+    pre_days <- sum(observed_days[seq_len(split_start - 1L)])
+    post_days <- sum(observed_days[split_start:n])
 
-    alternative_model <- safe_glm_nb_fixed_theta(
-      seizure_count ~ post_change + offset(log_observed_days),
-      data = candidate_data,
-      theta = theta
+    pre_weeks >= MIN_SEGMENT_WEEKS &&
+      post_weeks >= MIN_SEGMENT_WEEKS &&
+      pre_days >= MIN_SEGMENT_OBSERVED_DAYS &&
+      post_days >= MIN_SEGMENT_OBSERVED_DAYS
+  })]
+
+  if (length(split_starts) == 0) {
+    return(NA_real_)
+  }
+
+  lrt_values <- purrr::map_dbl(split_starts, function(split_start) {
+    pre_log_likelihood <- segment_log_likelihood(
+      seizure_count[seq_len(split_start - 1L)],
+      observed_days[seq_len(split_start - 1L)],
+      theta
     )
-
-    if (is.null(alternative_model)) {
+    post_log_likelihood <- segment_log_likelihood(
+      seizure_count[split_start:n],
+      observed_days[split_start:n],
+      theta
+    )
+    if (!is.finite(pre_log_likelihood) || !is.finite(post_log_likelihood)) {
       return(NA_real_)
     }
 
-    max(0, 2 * (as.numeric(stats::logLik(alternative_model)) - null_log_likelihood))
+    max(0, 2 * (pre_log_likelihood + post_log_likelihood - null_log_likelihood))
   })
 
-  if (all(!is.finite(lrt_statistics))) {
+  if (all(!is.finite(lrt_values))) {
     return(NA_real_)
   }
 
-  max(lrt_statistics, na.rm = TRUE)
+  max(lrt_values, na.rm = TRUE)
 }
 
-bootstrap_patient_p_value <- function(weekly_data, candidate_results, n_bootstrap) {
-  valid_candidates <- candidate_results %>%
-    dplyr::filter(.data$model_status == "ok", is.finite(.data$lrt_statistic))
-
-  if (nrow(valid_candidates) == 0 || n_bootstrap <= 0) {
+bootstrap_local_p_value <- function(weekly_data, segment_start, segment_end, theta, observed_lrt, n_bootstrap) {
+  if (!is.finite(observed_lrt) || n_bootstrap <= 0) {
     return(tibble::tibble(
-      observed_max_lrt = NA_real_,
       bootstrap_p_value = NA_real_,
       bootstrap_replicates = n_bootstrap,
       bootstrap_valid_replicates = 0L,
-      bootstrap_status = "not_run_no_valid_candidates"
+      bootstrap_status = "not_run"
     ))
   }
 
-  model_data <- weekly_data %>%
-    dplyr::mutate(log_observed_days = log(.data$observed_days))
-
-  null_model <- safe_glm_nb(
-    seizure_count ~ 1 + offset(log_observed_days),
-    data = model_data
-  )
-
-  if (is.null(null_model)) {
+  merged_data <- weekly_data[segment_start:segment_end, , drop = FALSE]
+  if (length(candidate_split_indices(merged_data)) == 0) {
     return(tibble::tibble(
-      observed_max_lrt = max(valid_candidates$lrt_statistic, na.rm = TRUE),
       bootstrap_p_value = NA_real_,
       bootstrap_replicates = n_bootstrap,
       bootstrap_valid_replicates = 0L,
-      bootstrap_status = "not_run_null_negative_binomial_fit_failed"
+      bootstrap_status = "not_run_no_valid_local_splits"
     ))
   }
 
-  observed_max_lrt <- max(valid_candidates$lrt_statistic, na.rm = TRUE)
-  candidate_weeks <- valid_candidates$candidate_week
-  mu <- as.numeric(stats::fitted(null_model))
-  theta <- null_model$theta
+  total_seizures <- sum(merged_data$seizure_count)
+  total_days <- sum(merged_data$observed_days)
+  mu <- total_seizures * merged_data$observed_days / total_days
 
-  simulated_max_lrt <- replicate(
+  simulated_lrt <- replicate(
     n_bootstrap,
     {
-      simulated_counts <- stats::rnbinom(n = length(mu), mu = mu, size = theta)
-      max_lrt_for_counts(simulated_counts, weekly_data, candidate_weeks, theta)
+      simulated_counts <- stats::rnbinom(n = nrow(merged_data), size = theta, mu = mu)
+      best_local_lrt_for_counts(simulated_counts, merged_data$observed_days, theta)
     }
   )
-
-  simulated_max_lrt <- simulated_max_lrt[is.finite(simulated_max_lrt)]
-  valid_replicates <- length(simulated_max_lrt)
+  simulated_lrt <- simulated_lrt[is.finite(simulated_lrt)]
+  valid_replicates <- length(simulated_lrt)
 
   if (valid_replicates == 0) {
     return(tibble::tibble(
-      observed_max_lrt = observed_max_lrt,
       bootstrap_p_value = NA_real_,
       bootstrap_replicates = n_bootstrap,
-      bootstrap_valid_replicates = valid_replicates,
+      bootstrap_valid_replicates = 0L,
       bootstrap_status = "failed_all_bootstrap_replicates"
     ))
   }
 
   tibble::tibble(
-    observed_max_lrt = observed_max_lrt,
-    bootstrap_p_value = (sum(simulated_max_lrt >= observed_max_lrt) + 1) / (valid_replicates + 1),
+    bootstrap_p_value = (sum(simulated_lrt >= observed_lrt) + 1) / (valid_replicates + 1),
     bootstrap_replicates = n_bootstrap,
     bootstrap_valid_replicates = valid_replicates,
     bootstrap_status = "ok"
   )
 }
 
-select_patient_change_point <- function(patient_summary, candidate_results, bootstrap_result) {
-  if (nrow(candidate_results) == 0) {
-    return(patient_summary %>%
-      dplyr::mutate(
-        candidate_week = as.Date(NA),
-        pre_segment_start_date = as.Date(NA),
-        pre_segment_end_date = as.Date(NA),
-        post_segment_start_date = as.Date(NA),
-        post_segment_end_date = as.Date(NA),
-        pre_weeks = NA_integer_,
-        post_weeks = NA_integer_,
-        pre_observed_days = NA_integer_,
-        post_observed_days = NA_integer_,
-        pre_seizure_count = NA_integer_,
-        post_seizure_count = NA_integer_,
-        pre_rate_per_30_days = NA_real_,
-        post_rate_per_30_days = NA_real_,
-        rate_ratio_post_vs_pre = NA_real_,
-        direction = NA_character_,
-        lrt_statistic = NA_real_,
-        raw_p_value = NA_real_,
-        observed_max_lrt = NA_real_,
-        bootstrap_p_value = NA_real_,
-        bootstrap_replicates = BOOTSTRAP_REPLICATES,
-        bootstrap_valid_replicates = 0L,
-        bootstrap_status = "not_run_no_candidate_weeks",
-        q_value = NA_real_,
-        significant = FALSE,
-        analysis_status = "insufficient_timeline_for_candidate_scan"
-      ))
-  }
-
-  best_candidate <- candidate_results %>%
-    dplyr::arrange(dplyr::desc(.data$lrt_statistic), .data$candidate_week) %>%
-    dplyr::slice(1)
-
+empty_patient_change_point_row <- function(patient_summary, theta, theta_status, segmentation) {
   patient_summary %>%
-    dplyr::bind_cols(best_candidate %>% dplyr::select(-dplyr::all_of("patient_id"))) %>%
-    dplyr::bind_cols(bootstrap_result) %>%
     dplyr::mutate(
+      candidate_week = as.Date(NA),
+      candidate_week_index = NA_integer_,
+      pre_segment_start_date = as.Date(NA),
+      pre_segment_end_date = as.Date(NA),
+      post_segment_start_date = as.Date(NA),
+      post_segment_end_date = as.Date(NA),
+      pre_weeks = NA_integer_,
+      post_weeks = NA_integer_,
+      pre_observed_days = NA_integer_,
+      post_observed_days = NA_integer_,
+      pre_seizure_count = NA_integer_,
+      post_seizure_count = NA_integer_,
+      pre_rate_per_30_days = NA_real_,
+      post_rate_per_30_days = NA_real_,
+      rate_ratio_post_vs_pre = NA_real_,
+      direction = NA_character_,
+      lrt_statistic = NA_real_,
+      raw_p_value = NA_real_,
+      bootstrap_p_value = NA_real_,
+      bootstrap_replicates = BOOTSTRAP_REPLICATES,
+      bootstrap_valid_replicates = 0L,
+      bootstrap_status = "not_run_no_selected_change_point",
       q_value = NA_real_,
       significant = FALSE,
-      analysis_status = dplyr::if_else(.data$model_status == "ok", "ok", .data$model_status)
+      theta = theta,
+      theta_status = theta_status,
+      n_model_segments = segmentation$n_segments,
+      n_model_change_points = segmentation$n_change_points,
+      null_cost = segmentation$null_cost,
+      selected_cost = segmentation$selected_cost,
+      selected_objective = segmentation$selected_objective,
+      penalty_per_segment = segmentation$penalty_per_segment,
+      analysis_status = segmentation$status
     )
+}
+
+build_change_point_table <- function(weekly_data, patient_summary, segmentation, segment_table, theta, theta_status) {
+  if (segmentation$n_change_points == 0L || nrow(segment_table) < 2L) {
+    return(empty_patient_change_point_row(patient_summary, theta, theta_status, segmentation))
+  }
+
+  purrr::map_dfr(seq_len(segmentation$n_change_points), function(change_index) {
+    pre_segment <- segment_table[change_index, , drop = FALSE]
+    post_segment <- segment_table[change_index + 1L, , drop = FALSE]
+    merged_start <- pre_segment$segment_start_week_index[[1]]
+    merged_end <- post_segment$segment_end_week_index[[1]]
+    merged_data <- weekly_data[merged_start:merged_end, , drop = FALSE]
+    merged_log_likelihood <- segment_log_likelihood(merged_data$seizure_count, merged_data$observed_days, theta)
+    split_log_likelihood <- pre_segment$log_likelihood[[1]] + post_segment$log_likelihood[[1]]
+    lrt_statistic <- ifelse(
+      is.finite(merged_log_likelihood) && is.finite(split_log_likelihood),
+      max(0, 2 * (split_log_likelihood - merged_log_likelihood)),
+      NA_real_
+    )
+    bootstrap_result <- bootstrap_local_p_value(
+      weekly_data = weekly_data,
+      segment_start = merged_start,
+      segment_end = merged_end,
+      theta = theta,
+      observed_lrt = lrt_statistic,
+      n_bootstrap = BOOTSTRAP_REPLICATES
+    )
+    pre_rate <- pre_segment$rate_per_30_days[[1]]
+    post_rate <- post_segment$rate_per_30_days[[1]]
+    rate_ratio <- ifelse(is.finite(pre_rate) && pre_rate > 0, post_rate / pre_rate, NA_real_)
+
+    patient_summary %>%
+      dplyr::mutate(
+        candidate_week = weekly_data$week[[post_segment$segment_start_week_index[[1]]]],
+        candidate_week_index = post_segment$segment_start_week_index[[1]],
+        pre_segment_start_date = pre_segment$segment_start_date[[1]],
+        pre_segment_end_date = pre_segment$segment_end_date[[1]],
+        post_segment_start_date = post_segment$segment_start_date[[1]],
+        post_segment_end_date = post_segment$segment_end_date[[1]],
+        pre_weeks = pre_segment$weeks[[1]],
+        post_weeks = post_segment$weeks[[1]],
+        pre_observed_days = pre_segment$observed_days[[1]],
+        post_observed_days = post_segment$observed_days[[1]],
+        pre_seizure_count = pre_segment$seizure_count[[1]],
+        post_seizure_count = post_segment$seizure_count[[1]],
+        pre_rate_per_30_days = pre_rate,
+        post_rate_per_30_days = post_rate,
+        rate_ratio_post_vs_pre = rate_ratio,
+        direction = dplyr::case_when(
+          is.na(rate_ratio) ~ NA_character_,
+          rate_ratio > 1 ~ "increase",
+          rate_ratio < 1 ~ "decrease",
+          TRUE ~ "no_change"
+        ),
+        lrt_statistic = lrt_statistic,
+        raw_p_value = stats::pchisq(lrt_statistic, df = 1, lower.tail = FALSE),
+        bootstrap_p_value = bootstrap_result$bootstrap_p_value[[1]],
+        bootstrap_replicates = bootstrap_result$bootstrap_replicates[[1]],
+        bootstrap_valid_replicates = bootstrap_result$bootstrap_valid_replicates[[1]],
+        bootstrap_status = bootstrap_result$bootstrap_status[[1]],
+        q_value = NA_real_,
+        significant = FALSE,
+        theta = theta,
+        theta_status = theta_status,
+        n_model_segments = segmentation$n_segments,
+        n_model_change_points = segmentation$n_change_points,
+        null_cost = segmentation$null_cost,
+        selected_cost = segmentation$selected_cost,
+        selected_objective = segmentation$selected_objective,
+        penalty_per_segment = segmentation$penalty_per_segment,
+        analysis_status = segmentation$status
+      )
+  })
 }
 
 patient_month_panel <- readr::read_csv(PANEL_INPUT_PATH, show_col_types = FALSE)
@@ -521,18 +713,34 @@ patient_results <- weekly_counts %>%
   dplyr::group_by(.data$patient_id) %>%
   dplyr::group_split() %>%
   purrr::map(function(patient_weekly_data) {
-    candidate_results <- scan_patient(patient_weekly_data)
-    bootstrap_result <- bootstrap_patient_p_value(
-      weekly_data = patient_weekly_data,
-      candidate_results = candidate_results,
-      n_bootstrap = BOOTSTRAP_REPLICATES
-    )
+    theta_result <- estimate_patient_theta(patient_weekly_data)
+    theta <- theta_result$theta[[1]]
+    theta_status <- theta_result$theta_status[[1]]
+    segmentation <- select_joint_segmentation(patient_weekly_data, theta)
     patient_summary <- patient_summaries %>%
       dplyr::filter(.data$patient_id == patient_weekly_data$patient_id[[1]])
+    segment_table <- build_segment_table(patient_weekly_data, segmentation, theta, theta_status)
+    change_point_table <- build_change_point_table(
+      weekly_data = patient_weekly_data,
+      patient_summary = patient_summary,
+      segmentation = segmentation,
+      segment_table = segment_table,
+      theta = theta,
+      theta_status = theta_status
+    )
+    candidate_table <- scan_patient_candidates(patient_weekly_data, theta) %>%
+      dplyr::mutate(
+        selected_by_joint_model = .data$candidate_week_index %in% change_point_table$candidate_week_index,
+        joint_model_n_segments = segmentation$n_segments,
+        joint_model_n_change_points = segmentation$n_change_points,
+        joint_model_status = segmentation$status,
+        penalty_per_segment = segmentation$penalty_per_segment
+      )
 
     list(
-      candidates = candidate_results,
-      patient = select_patient_change_point(patient_summary, candidate_results, bootstrap_result)
+      candidates = candidate_table,
+      change_points = change_point_table,
+      segments = segment_table
     )
   })
 
@@ -542,7 +750,7 @@ candidate_table <- patient_results %>%
   dplyr::arrange(.data$patient_id, .data$candidate_week)
 
 patient_table <- patient_results %>%
-  purrr::map("patient") %>%
+  purrr::map("change_points") %>%
   purrr::list_rbind()
 
 if (any(is.finite(patient_table$bootstrap_p_value))) {
@@ -558,35 +766,15 @@ if (any(is.finite(patient_table$bootstrap_p_value))) {
     )
 }
 
-segment_table <- patient_table %>%
-  dplyr::filter(!is.na(.data$candidate_week)) %>%
-  dplyr::select(
-    "patient_id",
-    "candidate_week",
-    "pre_segment_start_date",
-    "pre_segment_end_date",
-    "post_segment_start_date",
-    "post_segment_end_date",
-    "pre_weeks",
-    "post_weeks",
-    "pre_observed_days",
-    "post_observed_days",
-    "pre_seizure_count",
-    "post_seizure_count",
-    "pre_rate_per_30_days",
-    "post_rate_per_30_days"
-  ) %>%
-  tidyr::pivot_longer(
-    cols = -c("patient_id", "candidate_week"),
-    names_to = c("segment", ".value"),
-    names_pattern = "^(pre|post)_(.*)$"
-  ) %>%
-  dplyr::arrange(.data$patient_id, .data$candidate_week, .data$segment)
+segment_table <- patient_results %>%
+  purrr::map("segments") %>%
+  purrr::list_rbind() %>%
+  dplyr::arrange(.data$patient_id, .data$segment_start_date, .data$segment_id)
 
 readr::write_csv(candidate_table, CANDIDATES_OUTPUT_PATH)
 readr::write_csv(patient_table, PATIENT_OUTPUT_PATH)
 readr::write_csv(segment_table, SEGMENTS_OUTPUT_PATH)
 
-message("Wrote candidate-level results to: ", CANDIDATES_OUTPUT_PATH)
-message("Wrote patient-level results to: ", PATIENT_OUTPUT_PATH)
-message("Wrote segment summaries to: ", SEGMENTS_OUTPUT_PATH)
+message("Wrote joint-model candidate diagnostics to: ", CANDIDATES_OUTPUT_PATH)
+message("Wrote joint-model patient change-points to: ", PATIENT_OUTPUT_PATH)
+message("Wrote joint-model segment summaries to: ", SEGMENTS_OUTPUT_PATH)
