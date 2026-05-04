@@ -120,6 +120,25 @@ summarise_segment <- function(data, segment_label) {
   )
 }
 
+rate_ratio_post_vs_pre <- function(pre_rate, post_rate) {
+  dplyr::case_when(
+    is.na(pre_rate) | is.na(post_rate) ~ NA_real_,
+    pre_rate == 0 & post_rate == 0 ~ 1,
+    pre_rate == 0 & post_rate > 0 ~ Inf,
+    pre_rate > 0 ~ post_rate / pre_rate,
+    TRUE ~ NA_real_
+  )
+}
+
+rate_change_direction <- function(pre_rate, post_rate) {
+  dplyr::case_when(
+    is.na(pre_rate) | is.na(post_rate) ~ NA_character_,
+    post_rate > pre_rate ~ "increase",
+    post_rate < pre_rate ~ "decrease",
+    TRUE ~ "no_change"
+  )
+}
+
 estimate_patient_theta <- function(weekly_data) {
   model_data <- weekly_data %>%
     dplyr::mutate(log_observed_days = log(.data$observed_days))
@@ -214,17 +233,8 @@ candidate_summary <- function(weekly_data, split_start, theta, null_log_likeliho
     post_seizure_count = post$seizure_count,
     pre_rate_per_30_days = pre$rate_per_30_days,
     post_rate_per_30_days = post$rate_per_30_days,
-    rate_ratio_post_vs_pre = ifelse(
-      is.finite(pre$rate_per_30_days) && pre$rate_per_30_days > 0,
-      post$rate_per_30_days / pre$rate_per_30_days,
-      NA_real_
-    ),
-    direction = dplyr::case_when(
-      is.na(.data$rate_ratio_post_vs_pre) ~ NA_character_,
-      .data$rate_ratio_post_vs_pre > 1 ~ "increase",
-      .data$rate_ratio_post_vs_pre < 1 ~ "decrease",
-      TRUE ~ "no_change"
-    ),
+    rate_ratio_post_vs_pre = rate_ratio_post_vs_pre(pre$rate_per_30_days, post$rate_per_30_days),
+    direction = rate_change_direction(pre$rate_per_30_days, post$rate_per_30_days),
     lrt_statistic = lrt_statistic,
     raw_p_value = stats::pchisq(lrt_statistic, df = 1, lower.tail = FALSE),
     model_status = ifelse(is.finite(lrt_statistic), "ok", "likelihood_failed"),
@@ -572,7 +582,7 @@ build_change_point_table <- function(weekly_data, patient_summary, segmentation,
     )
     pre_rate <- pre_segment$rate_per_30_days[[1]]
     post_rate <- post_segment$rate_per_30_days[[1]]
-    rate_ratio <- ifelse(is.finite(pre_rate) && pre_rate > 0, post_rate / pre_rate, NA_real_)
+    rate_ratio <- rate_ratio_post_vs_pre(pre_rate, post_rate)
 
     patient_summary %>%
       dplyr::mutate(
@@ -591,12 +601,7 @@ build_change_point_table <- function(weekly_data, patient_summary, segmentation,
         pre_rate_per_30_days = pre_rate,
         post_rate_per_30_days = post_rate,
         rate_ratio_post_vs_pre = rate_ratio,
-        direction = dplyr::case_when(
-          is.na(rate_ratio) ~ NA_character_,
-          rate_ratio > 1 ~ "increase",
-          rate_ratio < 1 ~ "decrease",
-          TRUE ~ "no_change"
-        ),
+        direction = rate_change_direction(pre_rate, post_rate),
         lrt_statistic = lrt_statistic,
         raw_p_value = stats::pchisq(lrt_statistic, df = 1, lower.tail = FALSE),
         bootstrap_p_value = bootstrap_result$bootstrap_p_value[[1]],

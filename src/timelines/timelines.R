@@ -87,6 +87,14 @@ change_point_date_column <- function(data, column_name) {
   }
 }
 
+change_point_character_column <- function(data, column_name) {
+  if (column_name %in% names(data)) {
+    as.character(data[[column_name]])
+  } else {
+    rep(NA_character_, nrow(data))
+  }
+}
+
 min_date_or_na <- function(x) {
   x <- x[!is.na(x)]
   if (length(x) == 0) as.Date(NA) else min(x)
@@ -202,6 +210,7 @@ change_point_markers <- if (file.exists(CHANGE_POINT_INPUT_PATH)) {
       change_point_date = parse_event_date(candidate_week),
       pre_segment_start_date = change_point_date_column(change_point_raw, "pre_segment_start_date"),
       post_segment_end_date = change_point_date_column(change_point_raw, "post_segment_end_date"),
+      change_direction = str_to_lower(str_squish(change_point_character_column(change_point_raw, "direction"))),
       significant = parse_change_point_flag(significant)
     ) %>%
     filter(
@@ -209,13 +218,14 @@ change_point_markers <- if (file.exists(CHANGE_POINT_INPUT_PATH)) {
       !is.na(patient_id),
       !is.na(change_point_date)
     ) %>%
-    distinct(patient_id, change_point_date, pre_segment_start_date, post_segment_end_date)
+    distinct(patient_id, change_point_date, pre_segment_start_date, post_segment_end_date, change_direction)
 } else {
   tibble(
     patient_id = character(),
     pre_segment_start_date = as.Date(character()),
     change_point_date = as.Date(character()),
-    post_segment_end_date = as.Date(character())
+    post_segment_end_date = as.Date(character()),
+    change_direction = character()
   )
 }
 
@@ -798,7 +808,10 @@ plot_patient_timeline <- function(pt_id) {
     earliest_date <- plot_end_date - 30
   }
   pt_change_point_markers <- pt_change_points %>%
-    transmute(marker_date = change_point_date) %>%
+    transmute(
+      marker_date = change_point_date,
+      marker_direction = change_direction
+    ) %>%
     filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
 
   pt_meds <- pt_meds %>%
@@ -946,12 +959,28 @@ plot_patient_timeline <- function(pt_id) {
       )
   }
 
-  if (nrow(pt_change_point_markers) > 0) {
+  pt_increase_change_point_markers <- pt_change_point_markers %>%
+    filter(marker_direction == "increase")
+  pt_decrease_change_point_markers <- pt_change_point_markers %>%
+    filter(marker_direction == "decrease")
+
+  if (nrow(pt_increase_change_point_markers) > 0) {
     p <- p +
       geom_vline(
-        data = pt_change_point_markers,
+        data = pt_increase_change_point_markers,
         aes(xintercept = marker_date),
         color = "#C80813",
+        linewidth = 0.8,
+        alpha = 0.7
+      )
+  }
+
+  if (nrow(pt_decrease_change_point_markers) > 0) {
+    p <- p +
+      geom_vline(
+        data = pt_decrease_change_point_markers,
+        aes(xintercept = marker_date),
+        color = "#2B6CB0",
         linewidth = 0.8,
         alpha = 0.7
       )
