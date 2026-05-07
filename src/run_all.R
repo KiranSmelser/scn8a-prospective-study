@@ -71,6 +71,7 @@ pipeline_steps <- data.frame(
     rep("clustering", 4),
     "modeling",
     "changepoints",
+    "periodicity",
     "timelines"
   ),
   script = c(
@@ -100,6 +101,7 @@ pipeline_steps <- data.frame(
     "src/clustering/plot_clustering.R",
     "src/modeling/modeling.R",
     "src/changepoints/change_point_analysis.R",
+    "src/periodicity/patient_level_permutation.R",
     "src/timelines/timelines.R"
   ),
   stringsAsFactors = FALSE
