@@ -7,6 +7,7 @@ suppressPackageStartupMessages({
 })
 
 source("src/desc/medication_standardization.R")
+source("src/data_corrections.R")
 
 current_date <- Sys.Date()
 analysis_end <- current_date
@@ -23,35 +24,26 @@ collapse_medication_names <- function(values) {
   }
 }
 
-# Load medication data with standardized names
-medications <- readr::read_csv("data/medications.csv", show_col_types = FALSE) %>%
+medications_for_analysis <- read_medications_corrected() %>%
   standardize_non_rescue_epilepsy_medications(include_non_drug = FALSE) %>%
+  dplyr::mutate(patient_id = as.character(.data$patient_id))
+
+# Load medication data with standardized names
+medications <- medications_for_analysis %>%
   dplyr::mutate(
     med_patient_id = .data$patient_id,
     medication_name = .data$name_standardized
   ) %>%
   dplyr::select(.data$medication_id, .data$med_patient_id, .data$medication_name)
 
-# Load dosage data
-med_dosages_raw <- readr::read_csv("data/med_dosages.csv", show_col_types = FALSE) %>%
-  dplyr::mutate(
-    start_date = as.Date(.data$from),
-    end_date = as.Date(.data$to)
-  ) %>%
-  dplyr::mutate(
-    end_date = dplyr::if_else(is.na(.data$end_date), analysis_end, .data$end_date)
-  ) %>%
-  dplyr::filter(!is.na(.data$start_date))
-
 # Derive distinct medication intervals
-dosage_intervals <- med_dosages_raw %>%
-  dplyr::left_join(medications, by = "medication_id") %>%
-  dplyr::filter(!is.na(.data$med_patient_id), .data$med_patient_id == .data$patient_id) %>%
-  dplyr::mutate(patient_id = dplyr::coalesce(.data$patient_id, .data$med_patient_id)) %>%
-  dplyr::filter(!is.na(.data$patient_id)) %>%
+dosage_intervals <- read_medication_intervals_corrected(
+  medications_for_analysis = medications_for_analysis
+) %>%
   dplyr::select(.data$patient_id, .data$medication_id, .data$start_date, .data$end_date) %>%
   dplyr::filter(.data$start_date <= analysis_end) %>%
   dplyr::mutate(
+    end_date = dplyr::coalesce(.data$end_date, analysis_end),
     end_date = dplyr::if_else(.data$end_date > analysis_end, analysis_end, .data$end_date)
   ) %>%
   dplyr::filter(.data$start_date <= .data$end_date) %>%

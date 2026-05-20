@@ -43,7 +43,7 @@ PATIENT_START_DATES <- tibble::tibble(
   min_event_date = as.Date(c(
     "2025-08-28",
     "2025-12-26",
-    "2025-11-30",
+    "2025-10-04",
     "2025-12-14",
     "2025-05-13"
   ))

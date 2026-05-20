@@ -1,0 +1,2 @@
+medication_id,patient_id,name,reason,treatment_type,intake_type,is_rescue_med,is_deleted,createdAt,updatedAt
+manual_67d181092099f5b1ffcbc0db_praxis,67d181092099f5b1ffcbc0db,Praxis,epilepsy,drug,unknown,False,False,2026-04-02T00:00:00.000Z,2026-04-02T00:00:00.000Z

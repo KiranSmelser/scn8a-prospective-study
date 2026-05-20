@@ -7,6 +7,7 @@ suppressPackageStartupMessages({
 
 source("src/desc/medication_standardization.R")
 source("src/desc/seizure_type_standardization.R")
+source("src/data_corrections.R")
 
 dir.create("output/figs", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/figs/timelines", recursive = TRUE, showWarnings = FALSE)
@@ -164,7 +165,7 @@ patients <- readr::read_csv("data/patients.csv", show_col_types = FALSE) %>%
   select(patient_id, first_name, last_name)
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE)
-medications_raw <- readr::read_csv("data/medications.csv", show_col_types = FALSE)
+medications_raw <- read_medications_corrected()
 medications_for_analysis <- standardize_non_rescue_epilepsy_medications(
   medications_raw,
   include_non_drug = FALSE
@@ -180,7 +181,6 @@ form_answers <- if (file.exists("data/form_answers.csv")) {
 } else {
   tibble()
 }
-med_dosages <- readr::read_csv("data/med_dosages.csv", show_col_types = FALSE)
 med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE)
 surveys <- readr::read_csv("data/prospective_surveys.csv", show_col_types = FALSE)
 milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv", show_col_types = FALSE)
@@ -378,18 +378,10 @@ seizure_events <- events %>%
 
 # Medication intervals
 
-med_intervals_raw <- bind_rows(
-  med_dosages %>%
-    transmute(patient_id, medication_id, start_date = ymd(from), end_date = ymd(to)),
-  med_intakes %>%
-    transmute(patient_id, medication_id, start_date = ymd(intake_from), end_date = ymd(intake_to))
+med_intervals_raw <- read_medication_intervals_corrected(
+  medications_for_analysis = medications_for_analysis
 ) %>%
-  mutate(end_date = if_else(!is.na(end_date) & end_date < start_date, as.Date(NA), end_date)) %>%
-  filter(!is.na(start_date)) %>%
-  semi_join(
-    medications_for_analysis %>% select(patient_id, medication_id),
-    by = c("patient_id", "medication_id")
-  ) %>%
+  select(patient_id, medication_id, start_date, end_date) %>%
   distinct()
 
 medication_lookup <- medications_for_analysis %>%

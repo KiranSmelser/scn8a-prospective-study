@@ -64,7 +64,7 @@ if (length(missing_inputs) > 0) {
 
 pipeline_steps <- data.frame(
   phase = c(
-    rep("shared helpers", 2),
+    rep("shared helpers", 3),
     rep("raw-data summaries", 15),
     rep("cohort build", 2),
     "patient-month panel",
@@ -77,6 +77,7 @@ pipeline_steps <- data.frame(
   script = c(
     "src/desc/medication_standardization.R",
     "src/desc/seizure_type_standardization.R",
+    "src/data_corrections.R",
     "src/desc/app_usage.R",
     "src/desc/module_overlap_upset.R",
     "src/desc/weekly_survey.R",

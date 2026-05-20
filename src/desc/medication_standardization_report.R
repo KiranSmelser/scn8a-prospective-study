@@ -6,43 +6,23 @@ suppressPackageStartupMessages({
 })
 
 source("src/desc/medication_standardization.R")
+source("src/data_corrections.R")
 
 output_dir <- "output/tabs/medication_standardization"
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 analysis_date <- Sys.Date()
 
-medications_raw <- readr::read_csv("data/medications.csv", show_col_types = FALSE)
+medications_raw <- read_medications_corrected()
 medications_standardized <- standardize_non_rescue_epilepsy_medications(
   medications_raw,
   include_non_drug = FALSE
 ) %>%
   mutate(analysis_date = analysis_date)
 
-read_schedule_intervals <- function() {
-  med_dosages <- readr::read_csv("data/med_dosages.csv", show_col_types = FALSE) %>%
-    transmute(
-      patient_id,
-      medication_id,
-      start_date = suppressWarnings(lubridate::ymd(from)),
-      end_date = suppressWarnings(lubridate::ymd(to))
-    )
-
-  med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE) %>%
-    transmute(
-      patient_id,
-      medication_id,
-      start_date = suppressWarnings(lubridate::ymd(intake_from)),
-      end_date = suppressWarnings(lubridate::ymd(intake_to))
-    )
-
-  bind_rows(med_dosages, med_intakes) %>%
-    mutate(end_date = if_else(!is.na(end_date) & end_date < start_date, as.Date(NA), end_date)) %>%
-    filter(!is.na(start_date)) %>%
-    distinct()
-}
-
-med_intervals <- read_schedule_intervals()
+med_intervals <- read_medication_intervals_corrected(
+  medications_for_analysis = medications_standardized
+)
 
 active_medication_ids <- med_intervals %>%
   filter(

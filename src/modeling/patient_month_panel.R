@@ -6,6 +6,7 @@ suppressPackageStartupMessages({
 })
 
 source("src/desc/medication_standardization.R")
+source("src/data_corrections.R")
 
 TARGET_PATIENT_IDS <- c(
   "67b6126de8efcd6464eeb8c4",
@@ -129,9 +130,8 @@ forms <- if (file.exists("data/forms.csv")) {
 } else {
   tibble()
 }
-med_dosages <- readr::read_csv("data/med_dosages.csv", show_col_types = FALSE)
 med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE)
-medications_raw <- readr::read_csv("data/medications.csv", show_col_types = FALSE)
+medications_raw <- read_medications_corrected()
 surveys <- readr::read_csv("data/prospective_surveys.csv", show_col_types = FALSE)
 milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv", show_col_types = FALSE)
 whatsapp_status <- readr::read_csv("data/whatsapp_status.csv", show_col_types = FALSE)
@@ -222,31 +222,13 @@ medications_for_analysis <- standardize_non_rescue_epilepsy_medications(
 ) %>%
   mutate(name = .data$name_standardized)
 
-med_intervals_raw <- bind_rows(
-  med_dosages %>%
-    transmute(
-      patient_id = as.character(.data$patient_id),
-      medication_id = .data$medication_id,
-      start_date = ymd(.data$from),
-      end_date = ymd(.data$to)
-    ),
-  med_intakes %>%
-    transmute(
-      patient_id = as.character(.data$patient_id),
-      medication_id = .data$medication_id,
-      start_date = ymd(.data$intake_from),
-      end_date = ymd(.data$intake_to)
-    )
+med_intervals_raw <- read_medication_intervals_corrected(
+  medications_for_analysis = medications_for_analysis
 ) %>%
-  mutate(end_date = if_else(!is.na(.data$end_date) & .data$end_date < .data$start_date, as.Date(NA), .data$end_date)) %>%
   filter(
-    .data$patient_id %in% TARGET_PATIENT_IDS,
-    !is.na(.data$start_date)
+    .data$patient_id %in% TARGET_PATIENT_IDS
   ) %>%
-  semi_join(
-    medications_for_analysis %>% select(patient_id, medication_id),
-    by = c("patient_id", "medication_id")
-  ) %>%
+  select(patient_id, medication_id, start_date, end_date) %>%
   distinct()
 
 medication_lookup <- medications_for_analysis %>%

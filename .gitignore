@@ -2,6 +2,8 @@
 .Rhistory
 .RData
 .Ruserdata
-data/
+data/*
+!data/manual_corrections/
+!data/manual_corrections/*.csv
 output/
 docs/
