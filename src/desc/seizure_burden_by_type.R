@@ -12,12 +12,17 @@ OUTPUT_FIG_DIR <- "output/figs/seizure_patterns"
 OUTPUT_TAB_DIR <- "output/tabs/seizure_patterns"
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
 dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
+png_output_path <- file.path(OUTPUT_FIG_DIR, "patient_level_seizure_burden_by_type_violin_box.png")
+if (file.exists(png_output_path)) {
+  invisible(file.remove(png_output_path))
+}
 
-analysis_end <- Sys.Date()
+analysis_end <- analysis_end_date()
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
     !is.na(.data$patient_id),
     !is.na(.data$month),
     !is.na(.data$event_date),
@@ -58,6 +63,7 @@ usage_months <- if (file.exists("output/tabs/app_usage.json")) {
   ) %>%
     dplyr::mutate(month = as.Date(lubridate::floor_date(.data$month, "month"))) %>%
     dplyr::filter(
+      .data$patient_id %in% TARGET_PATIENT_IDS,
       !is.na(.data$patient_id),
       !is.na(.data$month),
       .data$month <= as.Date(lubridate::floor_date(analysis_end, "month")),
@@ -144,11 +150,10 @@ if (nrow(plot_data) > 0) {
       )
 
     ggplot2::ggsave(
-      filename = file.path(OUTPUT_FIG_DIR, "patient_level_seizure_burden_by_type_violin_box.png"),
+      filename = file.path(OUTPUT_FIG_DIR, "patient_level_seizure_burden_by_type_violin_box.pdf"),
       plot = p,
       width = max(9, 0.75 * dplyr::n_distinct(plot_data_stats$seizure_type_plot)),
-      height = 6.5,
-      dpi = 300
+      height = 6.5
     )
   } else {
     warning("Not enough seizure type groups with >=2 observations for pairwise comparisons; plot not generated.")

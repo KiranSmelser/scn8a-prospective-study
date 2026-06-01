@@ -4,6 +4,8 @@ suppressPackageStartupMessages({
   library(tidyverse)
 })
 
+source("src/analysis_config.R")
+
 INPUT_PATH <- "output/tabs/medication_standardization/non_rescue_epilepsy_medications_standardized.csv"
 WHATSAPP_STATUS_PATH <- "data/whatsapp_status.csv"
 OUTPUT_TAB_DIR <- "output/tabs/medication_patterns"
@@ -11,6 +13,17 @@ OUTPUT_FIG_DIR <- "output/figs/medication_patterns"
 
 dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
+
+legacy_png_paths <- file.path(
+  OUTPUT_FIG_DIR,
+  c(
+    "active_vs_weaned_medications_all.png",
+    "active_medication_pairwise_cooccurrence_heatmap.png",
+    "active_medication_combinations_upset.png",
+    "patient_level_medication_burden_histogram.png"
+  )
+)
+invisible(file.remove(legacy_png_paths[file.exists(legacy_png_paths)]))
 
 if (!file.exists(INPUT_PATH)) {
   stop("Missing input file: ", INPUT_PATH, call. = FALSE)
@@ -89,7 +102,16 @@ intersection_variant_label <- function(patient_ids, mutation_lookup) {
 
   variants <- unname(mutation_lookup[ids])
   variants[is.na(variants) | !nzchar(variants)] <- "NA"
-  paste(variants, collapse = ", ")
+  variant_counts <- table(variants)
+  variant_labels <- names(variant_counts)
+  duplicate_variants <- variant_counts > 1
+  variant_labels[duplicate_variants] <- paste0(
+    variant_labels[duplicate_variants],
+    " (n = ",
+    variant_counts[duplicate_variants],
+    ")"
+  )
+  paste(variant_labels, collapse = ", ")
 }
 
 meds <- readr::read_csv(INPUT_PATH, show_col_types = FALSE) %>%
@@ -104,7 +126,8 @@ meds <- readr::read_csv(INPUT_PATH, show_col_types = FALSE) %>%
     requires_review = as.logical(requires_review),
     is_active_on_analysis_date = tidyr::replace_na(is_active_on_analysis_date, FALSE),
     requires_review = tidyr::replace_na(requires_review, FALSE)
-  )
+  ) %>%
+  filter(.data$patient_id %in% TARGET_PATIENT_IDS)
 
 # Exclude medications still requiring review from all downstream analyses.
 meds <- meds %>%
@@ -208,11 +231,10 @@ comparison_plot <- ggplot(
   )
 
 ggplot2::ggsave(
-  file.path(OUTPUT_FIG_DIR, "active_vs_weaned_medications_all.png"),
+  file.path(OUTPUT_FIG_DIR, "active_vs_weaned_medications_all.pdf"),
   plot = comparison_plot,
   width = 10,
-  height = 7,
-  dpi = 300
+  height = 7
 )
 
 readr::write_csv(
@@ -357,11 +379,10 @@ if (nrow(incidence) > 0 && ncol(incidence) > 2) {
     )
 
   ggplot2::ggsave(
-    file.path(OUTPUT_FIG_DIR, "active_medication_pairwise_cooccurrence_heatmap.png"),
+    file.path(OUTPUT_FIG_DIR, "active_medication_pairwise_cooccurrence_heatmap.pdf"),
     plot = pairwise_heatmap,
     width = 11,
-    height = 10,
-    dpi = 300
+    height = 10
   )
 
   readr::write_csv(
@@ -597,13 +618,12 @@ if (length(top_upset_meds) >= 2 && nrow(active_med_list_by_patient) > 0) {
       axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
     )
 
-  upset_plot_path <- file.path(OUTPUT_FIG_DIR, "active_medication_combinations_upset.png")
+  upset_plot_path <- file.path(OUTPUT_FIG_DIR, "active_medication_combinations_upset.pdf")
   ggplot2::ggsave(
     filename = upset_plot_path,
     plot = upset_matrix_plot,
     width = max(10, 0.3 * upset_n_intersections + 3),
-    height = max(6, 0.25 * length(top_upset_meds) + 3),
-    dpi = 300
+    height = max(6, 0.25 * length(top_upset_meds) + 3)
   )
 
   readr::write_csv(
@@ -642,7 +662,7 @@ if (length(top_upset_meds) >= 2 && nrow(active_med_list_by_patient) > 0) {
 
 # Remove outputs from previous runs.
 burden_tab_path <- file.path(OUTPUT_TAB_DIR, "patient_level_medication_burden.csv")
-burden_fig_path <- file.path(OUTPUT_FIG_DIR, "patient_level_medication_burden_histogram.png")
+burden_fig_path <- file.path(OUTPUT_FIG_DIR, "patient_level_medication_burden_histogram.pdf")
 if (file.exists(burden_tab_path)) {
   invisible(file.remove(burden_tab_path))
 }

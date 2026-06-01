@@ -8,6 +8,8 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
+source("src/analysis_config.R")
+
 PANEL_INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 SEIZURE_INPUT_PATH <- "output/tabs/seizures/seizures.csv"
 CHANGEPOINT_SEGMENTS_INPUT_PATH <- "output/tabs/changepoints/change_point_segments.csv"
@@ -219,7 +221,7 @@ patient_windows <- readr::read_csv(PANEL_INPUT_PATH, show_col_types = FALSE) %>%
   dplyr::mutate(
     patient_id = as.character(.data$patient_id),
     study_start_date = as.Date(.data$study_start_date),
-    study_end_date = as.Date(.data$study_end_date)
+    study_end_date = pmin(as.Date(.data$study_end_date), ANALYSIS_CUTOFF_DATE)
   ) %>%
   dplyr::filter(!is.na(.data$study_start_date), !is.na(.data$study_end_date), .data$study_start_date <= .data$study_end_date) %>%
   dplyr::group_by(.data$patient_id) %>%
@@ -252,6 +254,7 @@ seizure_events <- readr::read_csv(SEIZURE_INPUT_PATH, show_col_types = FALSE) %>
   dplyr::inner_join(patient_windows, by = "patient_id") %>%
   dplyr::filter(
     !is.na(.data$event_date),
+    .data$event_date <= ANALYSIS_CUTOFF_DATE,
     .data$event_date >= .data$study_start_date,
     .data$event_date <= .data$study_end_date
   )
@@ -274,7 +277,7 @@ changepoint_segments <- readr::read_csv(CHANGEPOINT_SEGMENTS_INPUT_PATH, show_co
     patient_id = as.character(.data$patient_id),
     segment_id = as.integer(.data$segment_id),
     segment_start_date = as.Date(.data$segment_start_date),
-    segment_end_date = as.Date(.data$segment_end_date),
+    segment_end_date = pmin(as.Date(.data$segment_end_date), ANALYSIS_CUTOFF_DATE),
     segment_source = "changepoint"
   ) %>%
   dplyr::filter(

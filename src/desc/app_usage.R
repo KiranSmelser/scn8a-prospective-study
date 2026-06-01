@@ -4,8 +4,9 @@ suppressPackageStartupMessages({
   library(jsonlite)
 })
 
-analysis_month_cap <- as.Date(lubridate::floor_date(Sys.Date(), "month") - months(1))
-analysis_end <- as.Date(lubridate::ceiling_date(analysis_month_cap, "month") - days(1))
+source("src/analysis_config.R")
+
+analysis_end <- last_complete_analysis_month_end()
 
 parse_bool <- function(x) {
   stringr::str_to_lower(trimws(as.character(x))) %in% c("true", "1", "yes", "y")

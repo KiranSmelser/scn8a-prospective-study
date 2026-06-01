@@ -19,7 +19,7 @@ if (length(existing_timeline_pdfs) > 0) {
 if (file.exists("output/figs/helpilepsy_timelines.pdf")) {
   invisible(file.remove("output/figs/helpilepsy_timelines.pdf"))
 }
-current_date <- Sys.Date()
+current_date <- analysis_end_date()
 CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/patient_change_points.csv"
 CHANGE_POINT_REQUIRED_COLUMNS <- c(
   "patient_id",
@@ -189,7 +189,8 @@ app_activity_dates <- jsonlite::fromJSON("data/patient_summary_metrics.json") %>
   transmute(
     patient_id,
     app_activity_date = parse_event_date(first_app_activity_createdAt)
-  )
+  ) %>%
+  filter(is.na(app_activity_date) | app_activity_date <= current_date)
 
 change_point_markers <- if (file.exists(CHANGE_POINT_INPUT_PATH)) {
   change_point_raw <- readr::read_csv(
@@ -239,7 +240,7 @@ prospective_survey_completion <- surveys %>%
       survey_date
     )
   ) %>%
-  filter(!is.na(patient_id), survey_complete_flag, !is.na(survey_date)) %>%
+  filter(!is.na(patient_id), survey_complete_flag, !is.na(survey_date), survey_date <= current_date) %>%
   distinct(patient_id)
 
 # Daily app usage
@@ -370,7 +371,7 @@ seizure_events <- events %>%
       seizure_type_standardized
     )
   ) %>%
-  filter(!is.na(event_date)) %>%
+  filter(!is.na(event_date), event_date <= current_date) %>%
   select(
     patient_id, event_date, seizure_label, seizure_group,
     seizure_type_raw, seizure_type_standardized, seizure_type_primary
@@ -433,7 +434,7 @@ milestone_status_history <- milestones_raw %>%
     ),
     milestone_label = recode(milestone, !!!milestone_labels, .default = str_to_title(str_replace_all(milestone, "_", " ")))
   ) %>%
-  filter(!is.na(patient_id), !is.na(event_date))
+  filter(!is.na(patient_id), !is.na(event_date), event_date <= current_date)
 
 development_module_answered <- milestone_status_history %>%
   distinct(patient_id)
@@ -691,7 +692,7 @@ timeline_qc <- patient_order %>%
       )
       dates <- dates[!is.na(dates)]
       start_date <- if (length(dates) == 0) as.Date(NA) else min(dates)
-      if (!is.na(app_activity_date) && n_significant_change_points == 0L) {
+      if (isTRUE(!is.na(app_activity_date) && n_significant_change_points == 0L)) {
         max(start_date, app_activity_date)
       } else {
         start_date

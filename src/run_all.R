@@ -64,17 +64,18 @@ if (length(missing_inputs) > 0) {
 
 pipeline_steps <- data.frame(
   phase = c(
-    rep("shared helpers", 3),
+    rep("shared helpers", 4),
     rep("raw-data summaries", 15),
     rep("cohort build", 2),
     "patient-month panel",
     rep("clustering", 4),
-    "modeling",
+    rep("modeling", 2),
     "changepoints",
     rep("periodicity", 4),
     "timelines"
   ),
   script = c(
+    "src/analysis_config.R",
     "src/desc/medication_standardization.R",
     "src/desc/seizure_type_standardization.R",
     "src/data_corrections.R",
@@ -101,6 +102,7 @@ pipeline_steps <- data.frame(
     "src/clustering/summarize_clusters.R",
     "src/clustering/plot_clustering.R",
     "src/modeling/modeling.R",
+    "src/modeling/plot_model_coefficients.R",
     "src/changepoints/change_point_analysis.R",
     "src/periodicity/patient_level_permutation.R",
     "src/periodicity/patient_level_periodicity.R",

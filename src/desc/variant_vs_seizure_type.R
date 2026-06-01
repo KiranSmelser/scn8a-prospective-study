@@ -11,12 +11,17 @@ OUTPUT_FIG_DIR <- "output/figs/seizure_patterns"
 OUTPUT_TAB_DIR <- "output/tabs/seizure_patterns"
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
 dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
+png_output_path <- file.path(OUTPUT_FIG_DIR, "variant_vs_seizure_type.png")
+if (file.exists(png_output_path)) {
+  invisible(file.remove(png_output_path))
+}
 
-analysis_end <- Sys.Date()
+analysis_end <- analysis_end_date()
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
     !is.na(.data$patient_id),
     !is.na(.data$event_date),
     .data$event_date <= analysis_end,
@@ -58,7 +63,7 @@ variants <- readr::read_csv("data/whatsapp_status.csv", show_col_types = FALSE) 
       as.POSIXct("1900-01-01 00:00:00", tz = "UTC")
     )
   ) %>%
-  dplyr::filter(!is.na(.data$patient_id)) %>%
+  dplyr::filter(.data$patient_id %in% TARGET_PATIENT_IDS, !is.na(.data$patient_id)) %>%
   dplyr::arrange(.data$patient_id, dplyr::desc(.data$status_timestamp_utc)) %>%
   dplyr::group_by(.data$patient_id) %>%
   dplyr::summarise(variant = dplyr::first(.data$variant), .groups = "drop")
@@ -157,11 +162,10 @@ plot_width <- max(8, 1.0 * dplyr::n_distinct(heatmap_counts$seizure_type_plot) +
 plot_height <- max(5, 0.35 * dplyr::n_distinct(heatmap_counts$variant) + 2.5)
 
 ggplot2::ggsave(
-  filename = file.path(OUTPUT_FIG_DIR, "variant_vs_seizure_type.png"),
+  filename = file.path(OUTPUT_FIG_DIR, "variant_vs_seizure_type.pdf"),
   plot = p,
   width = plot_width,
-  height = plot_height,
-  dpi = 300
+  height = plot_height
 )
 
 readr::write_csv(

@@ -6,8 +6,9 @@ suppressPackageStartupMessages({
   library(jsonlite)
 })
 
-current_date <- Sys.Date()
-analysis_end <- current_date
+source("src/analysis_config.R")
+
+analysis_end <- analysis_end_date()
 analysis_month_cap <- if (is.na(analysis_end)) NA else floor_date(analysis_end, "month")
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
@@ -18,6 +19,7 @@ events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
     month = as.Date(lubridate::floor_date(.data$date_time, "month"))
   ) %>%
   dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
     !is.na(.data$patient_id),
     !is.na(.data$month),
     .data$event_date <= analysis_end
@@ -58,6 +60,7 @@ usage_months <- usage_months %>%
 if (!is.na(analysis_month_cap)) {
   usage_months <- usage_months %>%
     dplyr::filter(
+      .data$patient_id %in% TARGET_PATIENT_IDS,
       !is.na(.data$patient_id),
       !is.na(.data$month),
       .data$month <= analysis_month_cap,

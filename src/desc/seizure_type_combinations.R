@@ -11,14 +11,19 @@ OUTPUT_FIG_DIR <- "output/figs/seizure_patterns"
 OUTPUT_TAB_DIR <- "output/tabs/seizure_patterns"
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
 dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
+png_output_path <- file.path(OUTPUT_FIG_DIR, "seizure_type_combinations.png")
+if (file.exists(png_output_path)) {
+  invisible(file.remove(png_output_path))
+}
 
-analysis_end <- Sys.Date()
+analysis_end <- analysis_end_date()
 max_sets <- 8L
 max_intersections_to_plot <- 25L
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
     !is.na(.data$patient_id),
     !is.na(.data$month),
     !is.na(.data$event_date),
@@ -233,11 +238,10 @@ upset_plot <- patchwork::wrap_plots(
   )
 
 ggplot2::ggsave(
-  filename = file.path(OUTPUT_FIG_DIR, "seizure_type_combinations.png"),
+  filename = file.path(OUTPUT_FIG_DIR, "seizure_type_combinations.pdf"),
   plot = upset_plot,
   width = max(10, 0.33 * nrow(upset_intersections_top) + 3),
-  height = max(6, 0.25 * n_upset_sets + 3),
-  dpi = 300
+  height = max(6, 0.25 * n_upset_sets + 3)
 )
 
 readr::write_csv(

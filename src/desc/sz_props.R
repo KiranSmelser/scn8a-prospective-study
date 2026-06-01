@@ -9,6 +9,10 @@ source("src/desc/seizure_type_standardization.R")
 
 OUTPUT_FIG_DIR <- "output/figs/seizure_patterns"
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
+png_output_path <- file.path(OUTPUT_FIG_DIR, "sz_props.png")
+if (file.exists(png_output_path)) {
+  invisible(file.remove(png_output_path))
+}
 
 SEIZURE_TYPE_COLORS <- c(
   `Tonic-clonic` = "#5698a3",  
@@ -23,7 +27,11 @@ SEIZURE_TYPE_COLORS <- c(
 # Read events
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
-  dplyr::filter(!is.na(.data$month), !is.na(.data$patient_id))
+  dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
+    !is.na(.data$month),
+    !is.na(.data$patient_id)
+  )
 
 # Count each patient once per seizure group per month
 monthly_counts <- events %>%
@@ -60,9 +68,8 @@ p_sz_props <- ggplot(props_df, aes(x = month, y = prop, fill = seizure_group)) +
   scale_color_manual(values = SEIZURE_TYPE_COLORS)
 
 ggsave(
-  filename = file.path(OUTPUT_FIG_DIR, "sz_props.png"),
+  filename = file.path(OUTPUT_FIG_DIR, "sz_props.pdf"),
   plot = p_sz_props,
   width = 10,
-  height = 7,
-  dpi = 600
+  height = 7
 )

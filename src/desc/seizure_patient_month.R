@@ -12,10 +12,13 @@ OUTPUT_FIG_DIR <- "output/figs/seizure_patterns"
 OUTPUT_TAB_DIR <- "output/tabs/seizure_patterns"
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
 dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
+png_output_path <- file.path(OUTPUT_FIG_DIR, "seizure_patient_month.png")
+if (file.exists(png_output_path)) {
+  invisible(file.remove(png_output_path))
+}
 
-analysis_end <- Sys.Date()
-analysis_month_cap <- as.Date(lubridate::floor_date(analysis_end, "month") - months(1))
-analysis_end <- as.Date(lubridate::ceiling_date(analysis_month_cap, "month") - days(1))
+analysis_end <- last_complete_analysis_month_end()
+analysis_month_cap <- as.Date(lubridate::floor_date(analysis_end, "month"))
 
 SEIZURE_TYPE_COLORS <- c(
   "Tonic-clonic" = "#5698a3",
@@ -34,6 +37,7 @@ SEIZURE_TYPE_COLORS <- c(
 all_seizure_events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
     !is.na(.data$patient_id),
     !is.na(.data$month),
     !is.na(.data$event_date),
@@ -45,7 +49,7 @@ whatsapp_names <- readr::read_csv("data/whatsapp_status.csv", show_col_types = F
     patient_id = as.character(.data$patient_id),
     patient_name = stringr::str_squish(stringr::str_trim(paste(.data$first_name, .data$last_name)))
   ) %>%
-  dplyr::filter(!is.na(.data$patient_id), .data$patient_name != "") %>%
+  dplyr::filter(.data$patient_id %in% TARGET_PATIENT_IDS, !is.na(.data$patient_id), .data$patient_name != "") %>%
   dplyr::group_by(.data$patient_id) %>%
   dplyr::summarise(patient_name = dplyr::first(.data$patient_name), .groups = "drop")
 
@@ -77,7 +81,7 @@ variants <- readr::read_csv("data/whatsapp_status.csv", show_col_types = FALSE) 
       .data$variant
     )
   ) %>%
-  dplyr::filter(!is.na(.data$patient_id), !is.na(.data$variant)) %>%
+  dplyr::filter(.data$patient_id %in% TARGET_PATIENT_IDS, !is.na(.data$patient_id), !is.na(.data$variant)) %>%
   dplyr::arrange(.data$patient_id, dplyr::desc(.data$status_timestamp_utc)) %>%
   dplyr::group_by(.data$patient_id) %>%
   dplyr::summarise(variant = dplyr::first(.data$variant), .groups = "drop")
@@ -126,6 +130,7 @@ read_active_months <- function() {
   ) %>%
     dplyr::mutate(month = as.Date(lubridate::floor_date(.data$month, "month"))) %>%
     dplyr::filter(
+      .data$patient_id %in% TARGET_PATIENT_IDS,
       !is.na(.data$patient_id),
       !is.na(.data$month),
       .data$app_usage_days >= 1,
@@ -387,11 +392,10 @@ plot_width <- max(14, 2.6 * ncol_facets)
 plot_height <- max(9, 2.0 * nrow_facets + 1.5)
 
 ggplot2::ggsave(
-  filename = file.path(OUTPUT_FIG_DIR, "seizure_patient_month.png"),
+  filename = file.path(OUTPUT_FIG_DIR, "seizure_patient_month.pdf"),
   plot = p,
   width = plot_width,
-  height = plot_height,
-  dpi = 300
+  height = plot_height
 )
 
 readr::write_csv(

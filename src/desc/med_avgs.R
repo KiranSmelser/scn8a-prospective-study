@@ -9,8 +9,7 @@ suppressPackageStartupMessages({
 source("src/desc/medication_standardization.R")
 source("src/data_corrections.R")
 
-current_date <- Sys.Date()
-analysis_end <- current_date
+analysis_end <- analysis_end_date()
 
 collapse_medication_names <- function(values) {
   cleaned <- trimws(values)
@@ -26,7 +25,8 @@ collapse_medication_names <- function(values) {
 
 medications_for_analysis <- read_medications_corrected() %>%
   standardize_non_rescue_epilepsy_medications(include_non_drug = FALSE) %>%
-  dplyr::mutate(patient_id = as.character(.data$patient_id))
+  dplyr::mutate(patient_id = as.character(.data$patient_id)) %>%
+  dplyr::filter(.data$patient_id %in% TARGET_PATIENT_IDS)
 
 # Load medication data with standardized names
 medications <- medications_for_analysis %>%
@@ -87,6 +87,7 @@ usage_months <- usage_months %>%
 usage_months <- if (!is.na(analysis_month_cap)) {
   usage_months %>%
     dplyr::filter(
+      .data$patient_id %in% TARGET_PATIENT_IDS,
       !is.na(.data$patient_id),
       !is.na(.data$month),
       .data$month <= analysis_month_cap,

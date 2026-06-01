@@ -11,14 +11,18 @@ source("src/data_corrections.R")
 output_dir <- "output/tabs/medication_standardization"
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-analysis_date <- Sys.Date()
+analysis_date <- analysis_end_date()
 
 medications_raw <- read_medications_corrected()
 medications_standardized <- standardize_non_rescue_epilepsy_medications(
   medications_raw,
   include_non_drug = FALSE
 ) %>%
-  mutate(analysis_date = analysis_date)
+  mutate(
+    patient_id = as.character(.data$patient_id),
+    analysis_date = analysis_date
+  ) %>%
+  filter(.data$patient_id %in% TARGET_PATIENT_IDS)
 
 med_intervals <- read_medication_intervals_corrected(
   medications_for_analysis = medications_standardized

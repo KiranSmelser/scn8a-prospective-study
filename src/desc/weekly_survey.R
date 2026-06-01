@@ -5,6 +5,8 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
+source("src/analysis_config.R")
+
 FORMS_PATH <- "data/forms.csv"
 ANSWERS_PATH <- "data/form_answers.csv"
 OUTPUT_DIR <- "output/tabs"
@@ -35,7 +37,12 @@ scn8a_forms <- readr::read_csv(FORMS_PATH, show_col_types = FALSE) %>%
     completion_timestamp_utc = lubridate::ymd_hms(.data$date, quiet = TRUE, tz = "UTC"),
     completion_date = as.Date(.data$completion_timestamp_utc)
   ) %>%
-  dplyr::filter(!is.na(.data$form_name_clean), .data$form_name_clean == "scn8a diary completion") %>%
+  dplyr::filter(
+    !is.na(.data$form_name_clean),
+    .data$form_name_clean == "scn8a diary completion",
+    !is.na(.data$completion_date),
+    .data$completion_date <= ANALYSIS_CUTOFF_DATE
+  ) %>%
   dplyr::mutate(
     week_start = dplyr::if_else(
       !is.na(.data$completion_date),

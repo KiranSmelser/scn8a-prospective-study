@@ -779,7 +779,3 @@ segment_table <- patient_results %>%
 readr::write_csv(candidate_table, CANDIDATES_OUTPUT_PATH)
 readr::write_csv(patient_table, PATIENT_OUTPUT_PATH)
 readr::write_csv(segment_table, SEGMENTS_OUTPUT_PATH)
-
-message("Wrote joint-model candidate diagnostics to: ", CANDIDATES_OUTPUT_PATH)
-message("Wrote joint-model patient change-points to: ", PATIENT_OUTPUT_PATH)
-message("Wrote joint-model segment summaries to: ", SEGMENTS_OUTPUT_PATH)

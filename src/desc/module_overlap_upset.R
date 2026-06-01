@@ -2,7 +2,10 @@
 
 suppressPackageStartupMessages({
   library(tidyverse)
+  library(lubridate)
 })
+
+source("src/analysis_config.R")
 
 EVENTS_PATH <- "data/events.csv"
 MED_INTAKES_PATH <- "data/med_intakes.csv"
@@ -32,12 +35,31 @@ safe_read_csv <- function(path) {
   readr::read_csv(path, show_col_types = FALSE)
 }
 
+filter_records_on_or_before_cutoff <- function(data, date_column) {
+  if (!date_column %in% names(data)) {
+    return(data[0, , drop = FALSE])
+  }
+
+  data %>%
+    dplyr::mutate(
+      analysis_record_date = as.Date(suppressWarnings(lubridate::parse_date_time(
+        as.character(.data[[date_column]]),
+        orders = c("ymd HMS", "ymd HM", "ymd", "mdy HMS", "mdy HM", "mdy"),
+        tz = "UTC",
+        quiet = TRUE
+      )))
+    ) %>%
+    dplyr::filter(!is.na(.data$analysis_record_date), .data$analysis_record_date <= ANALYSIS_CUTOFF_DATE) %>%
+    dplyr::select(-"analysis_record_date")
+}
+
 get_seizure_event_patients <- function() {
   events <- safe_read_csv(EVENTS_PATH)
   if (!all(c("patient_id", "type") %in% names(events))) {
     return(character())
   }
   events %>%
+    filter_records_on_or_before_cutoff("date") %>%
     dplyr::mutate(type_clean = stringr::str_to_lower(stringr::str_squish(as.character(.data$type)))) %>%
     dplyr::filter(.data$type_clean == "seizure") %>%
     dplyr::pull(.data$patient_id) %>%
@@ -50,6 +72,7 @@ get_med_intake_patients <- function() {
     return(character())
   }
   med_intakes %>%
+    filter_records_on_or_before_cutoff("date") %>%
     dplyr::pull(.data$patient_id) %>%
     normalize_patient_ids()
 }
@@ -60,6 +83,7 @@ get_mood_sleep_patients <- function() {
     return(character())
   }
   mood_sleep %>%
+    filter_records_on_or_before_cutoff("date") %>%
     dplyr::pull(.data$patient_id) %>%
     normalize_patient_ids()
 }
@@ -70,6 +94,7 @@ get_prospective_matched_patients <- function() {
     return(character())
   }
   surveys %>%
+    filter_records_on_or_before_cutoff("prospective_study_timestamp_utc") %>%
     dplyr::pull(.data$patient_id) %>%
     normalize_patient_ids()
 }
@@ -80,6 +105,7 @@ get_weekly_diary_patients <- function() {
     return(character())
   }
   forms %>%
+    filter_records_on_or_before_cutoff("date") %>%
     dplyr::mutate(form_name_clean = stringr::str_to_lower(stringr::str_squish(as.character(.data$form_name)))) %>%
     dplyr::filter(.data$form_name_clean == "scn8a diary completion") %>%
     dplyr::pull(.data$patient_id) %>%

@@ -5,6 +5,8 @@ suppressPackageStartupMessages({
   library(tibble)
 })
 
+source("src/analysis_config.R")
+
 INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 OUTPUT_DIR <- "output/tabs/clustering"
 OUTPUT_PATH <- file.path(OUTPUT_DIR, "seizure_freq_features.csv")
@@ -45,7 +47,7 @@ patient_month_rates <- patient_month_panel %>%
     patient_id = as.character(.data$patient_id),
     month = as.Date(.data$month),
     study_start_date = as.Date(.data$study_start_date),
-    study_end_date = as.Date(.data$study_end_date),
+    study_end_date = pmin(as.Date(.data$study_end_date), ANALYSIS_CUTOFF_DATE),
     seizure_count = suppressWarnings(as.numeric(.data$seizure_count)),
     next_month_start = as.Date(format(.data$month + 32, "%Y-%m-01")),
     month_end = .data$next_month_start - 1,
@@ -59,6 +61,7 @@ patient_month_rates <- patient_month_panel %>%
     !is.na(.data$study_start_date),
     !is.na(.data$study_end_date),
     !is.na(.data$seizure_count),
+    .data$month <= ANALYSIS_CUTOFF_DATE,
     .data$observed_days_in_month > 0
   ) %>%
   mutate(

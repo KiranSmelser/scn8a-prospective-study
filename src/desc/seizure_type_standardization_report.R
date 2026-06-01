@@ -9,12 +9,16 @@ source("src/desc/seizure_type_standardization.R")
 output_dir <- "output/tabs/seizure_standardization"
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-analysis_date <- Sys.Date()
+analysis_date <- analysis_end_date()
 
 events_raw <- readr::read_csv("data/events.csv", show_col_types = FALSE)
 
 seizure_events_standardized <- standardize_seizure_events(events_raw) %>%
-  dplyr::mutate(analysis_date = analysis_date)
+  dplyr::mutate(
+    patient_id = as.character(.data$patient_id),
+    analysis_date = analysis_date
+  ) %>%
+  dplyr::filter(.data$patient_id %in% TARGET_PATIENT_IDS)
 
 seizure_type_reference <- seizure_events_standardized %>%
   dplyr::group_by(

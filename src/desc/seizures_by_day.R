@@ -9,7 +9,7 @@ suppressPackageStartupMessages({
 source("src/desc/seizure_type_standardization.R")
 
 START_DATE <- as.Date("2025-01-01")
-END_DATE <- Sys.Date()
+END_DATE <- analysis_end_date()
 EXCLUDED_PATIENT_IDS <- c(
   "5f9943574483f20039e2ec55",
   "5c09cabbe09148182fa713d3",
@@ -48,6 +48,7 @@ patient_names <- readr::read_csv("data/whatsapp_status.csv", show_col_types = FA
     patient_name = dplyr::na_if(.data$patient_name, "")
   ) %>%
   dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
     !is.na(.data$patient_id),
     .data$patient_id != "",
     !.data$patient_id %in% EXCLUDED_PATIENT_IDS
@@ -62,6 +63,7 @@ seizure_events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
     Date = as.Date(.data$event_date)
   ) %>%
   dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
     !is.na(.data$patient_id),
     .data$patient_id != "",
     !.data$patient_id %in% EXCLUDED_PATIENT_IDS,
@@ -76,6 +78,10 @@ app_activity_dates <- jsonlite::fromJSON("data/patient_summary_metrics.json") %>
     patient_id = as.character(.data$patient_id),
     start_date = parse_event_date(.data$first_app_activity_createdAt),
     start_date = dplyr::if_else(!is.na(.data$start_date) & .data$start_date < START_DATE, START_DATE, .data$start_date)
+  ) %>%
+  dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
+    is.na(.data$start_date) | .data$start_date <= END_DATE
   )
 
 all_daily_counts <- seizure_events %>%

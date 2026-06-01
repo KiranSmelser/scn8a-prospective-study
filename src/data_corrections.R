@@ -5,6 +5,8 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
+source("src/analysis_config.R")
+
 if (!exists("standardize_non_rescue_epilepsy_medications")) {
   source("src/desc/medication_standardization.R")
 }
@@ -233,6 +235,14 @@ read_medication_intervals_corrected <- function(
 
   dplyr::bind_rows(intervals, added_intervals) %>%
     apply_interval_truncations(corrections) %>%
+    dplyr::filter(.data$start_date <= ANALYSIS_CUTOFF_DATE) %>%
+    dplyr::mutate(
+      end_date = dplyr::if_else(
+        !is.na(.data$end_date) & .data$end_date > ANALYSIS_CUTOFF_DATE,
+        ANALYSIS_CUTOFF_DATE,
+        .data$end_date
+      )
+    ) %>%
     dplyr::filter(
       !is.na(.data$start_date),
       is.na(.data$end_date) | .data$end_date >= .data$start_date

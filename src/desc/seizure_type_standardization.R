@@ -5,6 +5,8 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
+source("src/analysis_config.R")
+
 normalize_seizure_text_for_match <- function(x) {
   normalized <- x %>%
     as.character() %>%
@@ -261,5 +263,6 @@ standardize_seizure_events <- function(events_df, filter_to_seizure = TRUE) {
       event_date = as.Date(.data$date_time),
       month = as.Date(lubridate::floor_date(.data$date_time, "month"))
     ) %>%
+    dplyr::filter(is.na(.data$event_date) | .data$event_date <= ANALYSIS_CUTOFF_DATE) %>%
     dplyr::select(-seizure_components)
 }

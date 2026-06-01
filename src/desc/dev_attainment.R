@@ -2,11 +2,31 @@
 
 suppressPackageStartupMessages({
   library(tidyverse)
+  library(lubridate)
   library(scales)
   library(stringr)
 })
 
+source("src/analysis_config.R")
+
+survey_ids_on_or_before_cutoff <- readr::read_csv("data/prospective_surveys.csv", show_col_types = FALSE) %>%
+  dplyr::mutate(
+    patient_id = as.character(.data$patient_id),
+    survey_date = as.Date(suppressWarnings(lubridate::ymd_hms(.data$prospective_study_timestamp_utc, quiet = TRUE, tz = "UTC"))),
+    survey_date = dplyr::coalesce(
+      .data$survey_date,
+      as.Date(suppressWarnings(lubridate::mdy_hm(.data$prospective_study_timestamp, quiet = TRUE, tz = "UTC")))
+    )
+  ) %>%
+  dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
+    !is.na(.data$survey_date),
+    .data$survey_date <= ANALYSIS_CUTOFF_DATE
+  ) %>%
+  dplyr::distinct(.data$survey_instance_id)
+
 milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv", show_col_types = FALSE) %>%
+  dplyr::semi_join(survey_ids_on_or_before_cutoff, by = "survey_instance_id") %>%
   dplyr::mutate(
     milestone = as.character(.data$milestone),
     survey_instance_id = as.character(.data$survey_instance_id),
@@ -73,4 +93,9 @@ p_dev_attainment <- milestones_summary %>%
     axis.title.y = element_blank()
   )
 
-ggsave(filename = "output/figs/dev_attainment.png", plot = p_dev_attainment, width = 10, height = 7, dpi = 600)
+png_output_path <- "output/figs/dev_attainment.png"
+if (file.exists(png_output_path)) {
+  invisible(file.remove(png_output_path))
+}
+
+ggsave(filename = "output/figs/dev_attainment.pdf", plot = p_dev_attainment, width = 10, height = 7)

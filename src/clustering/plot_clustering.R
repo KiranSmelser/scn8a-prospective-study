@@ -7,6 +7,8 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
+source("src/analysis_config.R")
+
 FEATURES_INPUT_PATH <- "output/tabs/clustering/seizure_freq_features.csv"
 ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 SEIZURES_INPUT_PATH <- "output/tabs/seizures/seizures.csv"
@@ -171,7 +173,11 @@ interseizure_intervals <- readr::read_csv(SEIZURES_INPUT_PATH, show_col_types = 
     patient_id = as.character(.data$patient_id),
     event_datetime = parse_event_datetime(.data$date)
   ) %>%
-  filter(!is.na(.data$patient_id), !is.na(.data$event_datetime)) %>%
+  filter(
+    !is.na(.data$patient_id),
+    !is.na(.data$event_datetime),
+    as.Date(.data$event_datetime) <= ANALYSIS_CUTOFF_DATE
+  ) %>%
   arrange(.data$patient_id, .data$event_datetime) %>%
   group_by(.data$patient_id) %>%
   mutate(
