@@ -21,11 +21,13 @@ if (file.exists("output/figs/helpilepsy_timelines.pdf")) {
 }
 current_date <- analysis_end_date()
 CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/patient_change_points.csv"
+CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 CHANGE_POINT_REQUIRED_COLUMNS <- c(
   "patient_id",
   "candidate_week",
   "significant"
 )
+CLUSTER_ASSIGNMENT_REQUIRED_COLUMNS <- c("patient_id", "pam_k3")
 
 # Milestone labels (from Citizen timelines)
 milestone_labels <- c(
@@ -78,6 +80,14 @@ parse_yes_no <- function(x) {
 
 parse_change_point_flag <- function(x) {
   str_to_lower(str_squish(as.character(x))) %in% c("true", "t", "1", "yes", "y")
+}
+
+format_pam_cluster_subtitle <- function(pam_cluster) {
+  if_else(
+    is.na(pam_cluster),
+    "Cluster: Unknown",
+    paste0("Cluster: ", pam_cluster)
+  )
 }
 
 change_point_date_column <- function(data, column_name) {
@@ -162,7 +172,11 @@ merge_intervals <- function(intervals_df) {
 # Import data
 
 patients <- readr::read_csv("data/patients.csv", show_col_types = FALSE) %>%
-  select(patient_id, first_name, last_name)
+  transmute(
+    patient_id = as.character(patient_id),
+    first_name,
+    last_name
+  )
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE)
 medications_raw <- read_medications_corrected()
@@ -187,10 +201,41 @@ milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv",
 app_activity_dates <- jsonlite::fromJSON("data/patient_summary_metrics.json") %>%
   as_tibble() %>%
   transmute(
-    patient_id,
+    patient_id = as.character(patient_id),
     app_activity_date = parse_event_date(first_app_activity_createdAt)
   ) %>%
   filter(is.na(app_activity_date) | app_activity_date <= current_date)
+
+if (!file.exists(CLUSTER_ASSIGNMENTS_INPUT_PATH)) {
+  stop(
+    "Cluster assignments input file not found: ",
+    CLUSTER_ASSIGNMENTS_INPUT_PATH,
+    ". Run src/clustering/clustering.R before src/timelines/timelines.R.",
+    call. = FALSE
+  )
+}
+
+cluster_assignments <- readr::read_csv(
+  CLUSTER_ASSIGNMENTS_INPUT_PATH,
+  col_types = readr::cols(.default = readr::col_guess(), patient_id = readr::col_character())
+)
+
+missing_cluster_assignment_columns <- setdiff(CLUSTER_ASSIGNMENT_REQUIRED_COLUMNS, names(cluster_assignments))
+if (length(missing_cluster_assignment_columns) > 0) {
+  stop(
+    "Cluster assignments are missing required columns: ",
+    paste(missing_cluster_assignment_columns, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+pam_cluster_lookup <- cluster_assignments %>%
+  transmute(
+    patient_id = as.character(patient_id),
+    pam_cluster = suppressWarnings(as.integer(pam_k3))
+  ) %>%
+  filter(!is.na(patient_id), patient_id != "") %>%
+  distinct(patient_id, .keep_all = TRUE)
 
 change_point_markers <- if (file.exists(CHANGE_POINT_INPUT_PATH)) {
   change_point_raw <- readr::read_csv(
@@ -559,12 +604,13 @@ patient_names <- patients %>%
   summarise(patient_name = first(patient_name[patient_name != ""]), .groups = "drop")
 patient_names <- patient_names %>%
   full_join(whatsapp_patient_metadata %>% select(patient_id, whatsapp_name, variant_p), by = "patient_id") %>%
+  left_join(pam_cluster_lookup, by = "patient_id") %>%
   mutate(
     display_name = coalesce(whatsapp_name, patient_name),
     display_name = if_else(is.na(display_name) | display_name == "", patient_id, display_name),
     variant_p = na_if(str_squish(as.character(variant_p)), "")
   ) %>%
-  select(patient_id, display_name, variant_p)
+  select(patient_id, display_name, variant_p, pam_cluster)
 
 patient_timeline_filenames <- patient_names %>%
   mutate(
@@ -723,6 +769,7 @@ plot_patient_timeline <- function(pt_id) {
   pt_info <- patients %>% filter(patient_id == pt_id) %>% slice_head(n = 1)
   pt_name <- patient_names %>% filter(patient_id == pt_id) %>% pull(display_name) %>% first()
   pt_variant <- patient_names %>% filter(patient_id == pt_id) %>% pull(variant_p) %>% first()
+  pt_pam_cluster <- patient_names %>% filter(patient_id == pt_id) %>% pull(pam_cluster) %>% first()
   if (is.na(pt_name) || pt_name == "") {
     pt_name <- str_trim(paste(pt_info$first_name, pt_info$last_name))
   }
@@ -871,6 +918,11 @@ plot_patient_timeline <- function(pt_id) {
     "Average seizures/month: %.2f",
     avg_seizures_per_month
   )
+  subtitle_text <- paste(
+    avg_seizure_text,
+    format_pam_cluster_subtitle(pt_pam_cluster),
+    sep = " | "
+  )
 
   y_levels <- character(0)
   if (nrow(pt_milestones) > 0) {
@@ -995,7 +1047,7 @@ plot_patient_timeline <- function(pt_id) {
     ) +
     labs(
       title = title_text,
-      subtitle = avg_seizure_text,
+      subtitle = subtitle_text,
       x = "Date",
       y = "",
       color = "Medication Status",

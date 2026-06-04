@@ -13,6 +13,7 @@ if (!exists("standardize_non_rescue_epilepsy_medications")) {
 
 MANUAL_CORRECTION_DIR <- "data/manual_corrections"
 MEDICATION_ADDITIONS_PATH <- file.path(MANUAL_CORRECTION_DIR, "medication_additions.csv")
+MEDICATION_EXCLUSIONS_PATH <- file.path(MANUAL_CORRECTION_DIR, "medication_exclusions.csv")
 MEDICATION_INTERVAL_CORRECTIONS_PATH <- file.path(MANUAL_CORRECTION_DIR, "medication_interval_corrections.csv")
 
 bind_to_template <- function(base_df, additions_df) {
@@ -40,11 +41,43 @@ read_optional_csv <- function(path) {
   readr::read_csv(path, show_col_types = FALSE)
 }
 
+read_medication_exclusions <- function(path = MEDICATION_EXCLUSIONS_PATH) {
+  exclusions <- read_optional_csv(path)
+
+  if (nrow(exclusions) == 0) {
+    return(tibble::tibble(
+      patient_id = character(),
+      medication_id = character()
+    ))
+  }
+
+  exclusions %>%
+    dplyr::transmute(
+      patient_id = as.character(.data$patient_id),
+      medication_id = as.character(.data$medication_id)
+    ) %>%
+    dplyr::filter(
+      !is.na(.data$patient_id),
+      !is.na(.data$medication_id),
+      .data$patient_id != "",
+      .data$medication_id != ""
+    ) %>%
+    dplyr::distinct()
+}
+
 read_medications_corrected <- function(
   medications_path = "data/medications.csv",
-  additions_path = MEDICATION_ADDITIONS_PATH
+  additions_path = MEDICATION_ADDITIONS_PATH,
+  exclusions_path = MEDICATION_EXCLUSIONS_PATH
 ) {
   medications <- readr::read_csv(medications_path, show_col_types = FALSE)
+  exclusions <- read_medication_exclusions(exclusions_path)
+
+  if (nrow(exclusions) > 0) {
+    medications <- medications %>%
+      dplyr::anti_join(exclusions, by = c("patient_id", "medication_id"))
+  }
+
   additions <- read_optional_csv(additions_path)
 
   if (nrow(additions) == 0) {

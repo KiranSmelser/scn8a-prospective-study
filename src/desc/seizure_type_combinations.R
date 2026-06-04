@@ -15,6 +15,13 @@ png_output_path <- file.path(OUTPUT_FIG_DIR, "seizure_type_combinations.png")
 if (file.exists(png_output_path)) {
   invisible(file.remove(png_output_path))
 }
+old_membership_output_path <- file.path(
+  OUTPUT_TAB_DIR,
+  "seizure_type_combinations_membership_patient_month.csv"
+)
+if (file.exists(old_membership_output_path)) {
+  invisible(file.remove(old_membership_output_path))
+}
 
 analysis_end <- analysis_end_date()
 max_sets <- 8L
@@ -47,11 +54,16 @@ if (nrow(events) == 0) {
   quit(save = "no", status = 0)
 }
 
-type_frequency <- events %>%
+type_patient_month_frequency <- events %>%
   dplyr::count(.data$seizure_type_combo, name = "n_patient_months") %>%
   dplyr::arrange(dplyr::desc(.data$n_patient_months), .data$seizure_type_combo)
 
-top_types <- type_frequency %>%
+type_patient_frequency <- events %>%
+  dplyr::distinct(.data$patient_id, .data$seizure_type_combo) %>%
+  dplyr::count(.data$seizure_type_combo, name = "n_patients") %>%
+  dplyr::arrange(dplyr::desc(.data$n_patients), .data$seizure_type_combo)
+
+top_types <- type_patient_frequency %>%
   dplyr::slice_head(n = max_sets) %>%
   dplyr::pull(.data$seizure_type_combo)
 
@@ -66,26 +78,21 @@ set_table <- tibble::tibble(
   y_axis_order = seq_along(top_types)
 )
 
-patient_month_members <- events %>%
-  dplyr::filter(.data$seizure_type_combo %in% top_types) %>%
-  dplyr::group_by(.data$patient_id, .data$month) %>%
+patient_members <- events %>%
+  dplyr::group_by(.data$patient_id) %>%
   dplyr::summarise(
     seizure_types = list(sort(unique(.data$seizure_type_combo))),
     .groups = "drop"
-  ) %>%
-  dplyr::mutate(
-    patient_month_id = paste(.data$patient_id, format(.data$month, "%Y-%m"), sep = "__")
-  ) %>%
-  dplyr::select(patient_month_id, patient_id, month, seizure_types)
+  )
 
-upset_membership <- patient_month_members %>%
-  dplyr::select(patient_month_id, patient_id, month)
+upset_membership <- patient_members %>%
+  dplyr::select(patient_id)
 
 for (i in seq_len(nrow(set_table))) {
   set_type <- set_table$seizure_type[[i]]
   set_key <- set_table$set_key[[i]]
   upset_membership[[set_key]] <- purrr::map_lgl(
-    patient_month_members$seizure_types,
+    patient_members$seizure_types,
     ~ set_type %in% .x
   )
 }
@@ -95,9 +102,8 @@ upset_keys <- set_table$set_key
 upset_intersections_all <- upset_membership %>%
   dplyr::group_by(dplyr::across(dplyr::all_of(upset_keys))) %>%
   dplyr::summarise(
-    n_patient_months = dplyr::n(),
-    n_patients = dplyr::n_distinct(.data$patient_id),
-    patient_month_ids = paste(sort(.data$patient_month_id), collapse = ";"),
+    n_patients = dplyr::n(),
+    patient_ids = paste(sort(.data$patient_id), collapse = ";"),
     .groups = "drop"
   ) %>%
   dplyr::mutate(
@@ -115,12 +121,12 @@ upset_intersections_all <- upset_membership %>%
     )
   ) %>%
   dplyr::filter(.data$n_sets > 0) %>%
-  dplyr::arrange(dplyr::desc(.data$n_patients), dplyr::desc(.data$n_patient_months), dplyr::desc(.data$n_sets), .data$combination) %>%
+  dplyr::arrange(dplyr::desc(.data$n_patients), dplyr::desc(.data$n_sets), .data$combination) %>%
   dplyr::mutate(intersection_id = paste0("I", dplyr::row_number()))
 
 upset_intersections_top <- upset_intersections_all %>%
   dplyr::slice_head(n = max_intersections_to_plot) %>%
-  dplyr::arrange(dplyr::desc(.data$n_patients), dplyr::desc(.data$n_patient_months), dplyr::desc(.data$n_sets), .data$combination) %>%
+  dplyr::arrange(dplyr::desc(.data$n_patients), dplyr::desc(.data$n_sets), .data$combination) %>%
   dplyr::mutate(
     plot_order = dplyr::row_number(),
     plot_x = factor(.data$plot_order, levels = .data$plot_order)
@@ -129,7 +135,7 @@ upset_intersections_top <- upset_intersections_all %>%
 n_upset_sets <- nrow(set_table)
 
 upset_matrix <- upset_intersections_top %>%
-  dplyr::select(plot_order, plot_x, intersection_id, n_patient_months, dplyr::all_of(upset_keys)) %>%
+  dplyr::select(plot_order, plot_x, intersection_id, dplyr::all_of(upset_keys)) %>%
   tidyr::pivot_longer(
     cols = dplyr::all_of(upset_keys),
     names_to = "set_key",
@@ -152,10 +158,12 @@ upset_segments <- upset_matrix %>%
   ) %>%
   dplyr::filter(.data$n_present >= 2)
 
-x_labels <- setNames(
-  paste0("C", upset_intersections_top$plot_order, "\n(n=", upset_intersections_top$n_patient_months, ")"),
-  as.character(upset_intersections_top$plot_x)
-)
+set_patient_totals <- set_table %>%
+  dplyr::left_join(type_patient_frequency, by = c("seizure_type" = "seizure_type_combo")) %>%
+  dplyr::mutate(
+    n_patients = tidyr::replace_na(.data$n_patients, 0L),
+    y_idx = n_upset_sets - match(.data$seizure_type, top_types) + 1L
+  )
 
 upset_bar_plot <- ggplot2::ggplot(
   upset_intersections_top,
@@ -206,7 +214,9 @@ upset_matrix_plot <- ggplot2::ggplot(
   ) +
   ggplot2::scale_y_continuous(
     breaks = seq_len(n_upset_sets),
-    labels = rev(top_types)
+    labels = rev(top_types),
+    limits = c(0.5, n_upset_sets + 0.5),
+    expand = ggplot2::expansion(mult = c(0, 0))
   ) +
   ggplot2::scale_x_discrete(
     limits = as.character(upset_intersections_top$plot_order),
@@ -224,10 +234,49 @@ upset_matrix_plot <- ggplot2::ggplot(
     plot.title = ggplot2::element_text(face = "bold")
   )
 
+set_total_plot <- ggplot2::ggplot(set_patient_totals) +
+  ggplot2::geom_rect(
+    ggplot2::aes(
+      xmin = 0,
+      xmax = .data$n_patients,
+      ymin = .data$y_idx - 0.34,
+      ymax = .data$y_idx + 0.34
+    ),
+    fill = "#4E79A7"
+  ) +
+  ggplot2::geom_text(
+    ggplot2::aes(x = .data$n_patients, y = .data$y_idx, label = .data$n_patients),
+    hjust = -0.25,
+    size = 3
+  ) +
+  ggplot2::scale_y_continuous(
+    breaks = seq_len(n_upset_sets),
+    labels = NULL,
+    limits = c(0.5, n_upset_sets + 0.5),
+    expand = ggplot2::expansion(mult = c(0, 0))
+  ) +
+  ggplot2::scale_x_continuous(
+    expand = ggplot2::expansion(mult = c(0, 0.18))
+  ) +
+  ggplot2::labs(
+    x = "# of patients",
+    y = NULL
+  ) +
+  ggplot2::theme_minimal(base_size = 11) +
+  ggplot2::theme(
+    panel.grid.major.y = ggplot2::element_blank(),
+    panel.grid.minor = ggplot2::element_blank(),
+    axis.text.y = ggplot2::element_blank(),
+    axis.ticks.y = ggplot2::element_blank()
+  )
+
 upset_plot <- patchwork::wrap_plots(
   upset_bar_plot,
+  patchwork::plot_spacer(),
   upset_matrix_plot,
-  ncol = 1,
+  set_total_plot,
+  ncol = 2,
+  widths = c(4.2, 1.35),
   heights = c(1.25, 3.1)
 ) +
   patchwork::plot_annotation(
@@ -240,13 +289,17 @@ upset_plot <- patchwork::wrap_plots(
 ggplot2::ggsave(
   filename = file.path(OUTPUT_FIG_DIR, "seizure_type_combinations.pdf"),
   plot = upset_plot,
-  width = max(10, 0.33 * nrow(upset_intersections_top) + 3),
+  width = max(11, 0.33 * nrow(upset_intersections_top) + 4),
   height = max(6, 0.25 * n_upset_sets + 3)
 )
 
 readr::write_csv(
-  type_frequency,
+  type_patient_month_frequency,
   file.path(OUTPUT_TAB_DIR, "seizure_type_patient_month_frequency.csv")
+)
+readr::write_csv(
+  type_patient_frequency,
+  file.path(OUTPUT_TAB_DIR, "seizure_type_patient_frequency.csv")
 )
 readr::write_csv(
   set_table,
@@ -254,18 +307,22 @@ readr::write_csv(
 )
 readr::write_csv(
   upset_membership,
-  file.path(OUTPUT_TAB_DIR, "seizure_type_combinations_membership_patient_month.csv")
+  file.path(OUTPUT_TAB_DIR, "seizure_type_combinations_membership_patient.csv")
+)
+readr::write_csv(
+  set_patient_totals %>%
+    dplyr::select(set_key, seizure_type, y_idx, n_patients),
+  file.path(OUTPUT_TAB_DIR, "seizure_type_combinations_set_patient_totals.csv")
 )
 readr::write_csv(
   upset_intersections_all %>%
     dplyr::select(
       intersection_id,
-      n_patient_months,
       n_patients,
       n_sets,
       combination,
       dplyr::all_of(upset_keys),
-      patient_month_ids
+      patient_ids
     ),
   file.path(OUTPUT_TAB_DIR, "seizure_type_combinations_intersections_all.csv")
 )
@@ -274,12 +331,11 @@ readr::write_csv(
     dplyr::select(
       plot_order,
       intersection_id,
-      n_patient_months,
       n_patients,
       n_sets,
       combination,
       dplyr::all_of(upset_keys),
-      patient_month_ids
+      patient_ids
     ),
   file.path(OUTPUT_TAB_DIR, "seizure_type_combinations_intersections_top.csv")
 )

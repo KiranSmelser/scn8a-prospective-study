@@ -64,7 +64,7 @@ extract_standardized_med_components <- function(raw_name) {
   add_med(stringr::str_detect(text, "\\b(levetiracetam|keppra|lev)\\b"), "Levetiracetam")
   add_med(stringr::str_detect(text, "\\b(oxcarbazepine|trileptal|oxtellar|oxc)\\b"), "Oxcarbazepine")
   add_med(stringr::str_detect(text, "\\b(phenobarbital|phb)\\b"), "Phenobarbital")
-  add_med(stringr::str_detect(text, "\\b(phenytoin|fenitoina|hidantal|pht)\\b"), "Phenytoin")
+  add_med(stringr::str_detect(text, "\\b(phenytoin|fenitoina|fenito\\s*ina|hidantal|pht)\\b"), "Phenytoin")
   add_med(stringr::str_detect(text, "\\b(relutrigine|praxis)\\b"), "Praxis")
   add_med(stringr::str_detect(text, "\\b(rufinamide|banzel)\\b"), "Rufinamide")
   add_med(stringr::str_detect(text, "\\b(topiramate|topamax|topiramato)\\b"), "Topiramate")

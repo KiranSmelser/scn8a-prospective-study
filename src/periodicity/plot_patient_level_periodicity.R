@@ -10,6 +10,7 @@ suppressPackageStartupMessages({
 
 PERIODICITY_INPUT_PATH <- "output/tabs/periodicity/patient_level_periodicity.csv"
 LAG_INPUT_PATH <- "output/tabs/periodicity/patient_level_periodicity_lags.csv"
+CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 OUTPUT_FIG_DIR <- "output/figs/periodicity"
 HEATMAP_PDF_OUTPUT_PATH <- file.path(OUTPUT_FIG_DIR, "periodicity_heatmap.pdf")
 
@@ -23,6 +24,10 @@ if (!file.exists(LAG_INPUT_PATH)) {
   stop("Lag diagnostics input file not found: ", LAG_INPUT_PATH, call. = FALSE)
 }
 
+if (!file.exists(CLUSTER_ASSIGNMENTS_INPUT_PATH)) {
+  stop("Cluster assignments input file not found: ", CLUSTER_ASSIGNMENTS_INPUT_PATH, call. = FALSE)
+}
+
 wrap_variant_label <- function(variant_p, patient_id) {
   variant <- dplyr::if_else(
     is.na(variant_p) | variant_p == "",
@@ -32,6 +37,39 @@ wrap_variant_label <- function(variant_p, patient_id) {
   short_patient_id <- stringr::str_sub(patient_id, 1L, 6L)
   stringr::str_wrap(paste0(variant, " (", short_patient_id, ")"), width = 30)
 }
+
+format_cluster_label <- function(pam_cluster) {
+  dplyr::if_else(
+    is.na(pam_cluster),
+    "Cluster Unknown",
+    paste("Cluster", pam_cluster)
+  )
+}
+
+cluster_assignments <- readr::read_csv(CLUSTER_ASSIGNMENTS_INPUT_PATH, show_col_types = FALSE)
+
+missing_cluster_columns <- setdiff(c("patient_id", "pam_k3"), names(cluster_assignments))
+if (length(missing_cluster_columns) > 0) {
+  stop(
+    "Cluster assignments are missing required columns: ",
+    paste(missing_cluster_columns, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+cluster_lookup <- cluster_assignments %>%
+  dplyr::transmute(
+    patient_id = as.character(.data$patient_id),
+    pam_cluster = suppressWarnings(as.integer(.data$pam_k3))
+  )
+
+cluster_label_levels <- cluster_lookup %>%
+  dplyr::filter(!is.na(.data$pam_cluster)) %>%
+  dplyr::distinct(.data$pam_cluster) %>%
+  dplyr::arrange(.data$pam_cluster) %>%
+  dplyr::pull(.data$pam_cluster) %>%
+  format_cluster_label() %>%
+  c("Cluster Unknown")
 
 periodicity_results <- readr::read_csv(PERIODICITY_INPUT_PATH, show_col_types = FALSE) %>%
   dplyr::mutate(
@@ -43,10 +81,20 @@ periodicity_results <- readr::read_csv(PERIODICITY_INPUT_PATH, show_col_types = 
       .data$analysis_status == "ok" ~ "Not significant",
       TRUE ~ "Not tested"
     )
+  ) %>%
+  dplyr::left_join(cluster_lookup, by = "patient_id") %>%
+  dplyr::mutate(
+    pam_cluster_sort = dplyr::if_else(
+      is.na(.data$pam_cluster),
+      Inf,
+      as.double(.data$pam_cluster)
+    ),
+    pam_cluster_label = factor(format_cluster_label(.data$pam_cluster), levels = cluster_label_levels)
   )
 
 patient_order <- periodicity_results %>%
   dplyr::arrange(
+    .data$pam_cluster_sort,
     dplyr::desc(.data$significant),
     .data$strongest_positive_lag_days,
     dplyr::desc(.data$strongest_positive_autocorrelation),
@@ -62,7 +110,14 @@ heatmap_data <- readr::read_csv(LAG_INPUT_PATH, show_col_types = FALSE) %>%
   ) %>%
   dplyr::left_join(
     periodicity_results %>%
-      dplyr::select("patient_id", "patient_status", "observed_seizure_days", "observed_seizure_events"),
+      dplyr::select(
+        "patient_id",
+        "patient_status",
+        "observed_seizure_days",
+        "observed_seizure_events",
+        "pam_cluster",
+        "pam_cluster_label"
+      ),
     by = "patient_id"
   ) %>%
   dplyr::filter(.data$analysis_status == "ok") %>%
@@ -116,6 +171,12 @@ p_heatmap <- ggplot2::ggplot(
     breaks = reference_lags,
     expand = c(0, 0)
   ) +
+  ggplot2::facet_grid(
+    rows = ggplot2::vars(pam_cluster_label),
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
   ggplot2::labs(
     title = "Patient-Level Seizure Periodicity",
     x = "Days",
@@ -131,6 +192,9 @@ p_heatmap <- ggplot2::ggplot(
     legend.background = ggplot2::element_rect(fill = "white", color = NA),
     plot.title = ggplot2::element_text(face = "bold"),
     plot.subtitle = ggplot2::element_text(size = 10, color = "grey25"),
+    strip.background = ggplot2::element_blank(),
+    strip.placement = "outside",
+    strip.text.y.left = ggplot2::element_text(face = "bold", angle = 0, size = 8),
     legend.position = "right"
   )
 

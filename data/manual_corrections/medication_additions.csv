@@ -1,2 +1,7 @@
 medication_id,patient_id,name,reason,treatment_type,intake_type,is_rescue_med,is_deleted,createdAt,updatedAt
 manual_67d181092099f5b1ffcbc0db_praxis,67d181092099f5b1ffcbc0db,Praxis,epilepsy,drug,unknown,False,False,2026-04-02T00:00:00.000Z,2026-04-02T00:00:00.000Z
+manual_67d0c5202099f5b1ffcbbbc9_topiramate,67d0c5202099f5b1ffcbbbc9,Topiramato,epilepsy,drug,pill,False,False,2025-03-11T23:41:32.000Z,2025-03-11T23:41:32.000Z
+manual_67d0c5202099f5b1ffcbbbc9_lamotrigine,67d0c5202099f5b1ffcbbbc9,Lamotrigina,epilepsy,drug,pill,False,False,2025-03-11T23:41:32.000Z,2025-03-11T23:41:32.000Z
+manual_67d0c5202099f5b1ffcbbbc9_lacosamide,67d0c5202099f5b1ffcbbbc9,Lacosamida,epilepsy,drug,pill,False,False,2025-03-11T23:41:32.000Z,2025-03-11T23:41:32.000Z
+manual_67d0c5202099f5b1ffcbbbc9_phenytoin,67d0c5202099f5b1ffcbbbc9,Fenitoína,epilepsy,drug,pill,False,False,2025-03-11T23:41:32.000Z,2025-03-11T23:41:32.000Z
+manual_67d0c5202099f5b1ffcbbbc9_clonazepam,67d0c5202099f5b1ffcbbbc9,Clonazepam,epilepsy,drug,pill,False,False,2025-03-11T23:41:32.000Z,2025-03-11T23:41:32.000Z

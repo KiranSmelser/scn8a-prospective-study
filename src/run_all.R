@@ -65,10 +65,10 @@ if (length(missing_inputs) > 0) {
 pipeline_steps <- data.frame(
   phase = c(
     rep("shared helpers", 4),
-    rep("raw-data summaries", 15),
+    rep("raw-data summaries", 14),
     rep("cohort build", 2),
     "patient-month panel",
-    rep("clustering", 4),
+    rep("clustering", 5),
     rep("modeling", 2),
     "changepoints",
     rep("periodicity", 4),
@@ -82,7 +82,6 @@ pipeline_steps <- data.frame(
     "src/desc/app_usage.R",
     "src/desc/module_overlap_upset.R",
     "src/desc/weekly_survey.R",
-    "src/desc/dev_attainment.R",
     "src/desc/medication_standardization_report.R",
     "src/desc/medication_patterns.R",
     "src/desc/med_avgs.R",
@@ -101,6 +100,7 @@ pipeline_steps <- data.frame(
     "src/clustering/clustering.R",
     "src/clustering/summarize_clusters.R",
     "src/clustering/plot_clustering.R",
+    "src/desc/dev_attainment.R",
     "src/modeling/modeling.R",
     "src/modeling/plot_model_coefficients.R",
     "src/changepoints/change_point_analysis.R",

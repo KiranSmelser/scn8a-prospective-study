@@ -9,6 +9,7 @@ suppressPackageStartupMessages({
 })
 
 PERMUTATION_RESULTS_INPUT_PATH <- "output/tabs/periodicity/patient_level_changepoint_stratified_permutation.csv"
+CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 OUTPUT_FIG_DIR <- "output/figs/periodicity"
 OUTPUT_TAB_DIR <- "output/tabs/periodicity"
 PLOT_DATA_OUTPUT_PATH <- file.path(OUTPUT_TAB_DIR, "patient_level_permutation_plot_data.csv")
@@ -24,6 +25,10 @@ if (!file.exists(PERMUTATION_RESULTS_INPUT_PATH)) {
   stop("Permutation results input file not found: ", PERMUTATION_RESULTS_INPUT_PATH, call. = FALSE)
 }
 
+if (!file.exists(CLUSTER_ASSIGNMENTS_INPUT_PATH)) {
+  stop("Cluster assignments input file not found: ", CLUSTER_ASSIGNMENTS_INPUT_PATH, call. = FALSE)
+}
+
 wrap_variant_label <- function(variant_p, patient_id) {
   variant <- dplyr::if_else(
     is.na(variant_p) | variant_p == "",
@@ -34,12 +39,44 @@ wrap_variant_label <- function(variant_p, patient_id) {
   stringr::str_wrap(paste0(variant, " (", short_patient_id, ")"), width = 28)
 }
 
+format_cluster_label <- function(pam_cluster) {
+  dplyr::if_else(
+    is.na(pam_cluster),
+    "Cluster Unknown",
+    paste("Cluster", pam_cluster)
+  )
+}
+
 window_labels <- c(
   lag_1_day = "1 day",
   lag_2_3_days = "2-3 days",
-  lag_4_7_days = "4-7 days",
-  lag_8_14_days = "8-14 days"
+  lag_4_7_days = "4-7 days"
 )
+
+cluster_assignments <- readr::read_csv(CLUSTER_ASSIGNMENTS_INPUT_PATH, show_col_types = FALSE)
+
+missing_cluster_columns <- setdiff(c("patient_id", "pam_k3"), names(cluster_assignments))
+if (length(missing_cluster_columns) > 0) {
+  stop(
+    "Cluster assignments are missing required columns: ",
+    paste(missing_cluster_columns, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+cluster_lookup <- cluster_assignments %>%
+  dplyr::transmute(
+    patient_id = as.character(.data$patient_id),
+    pam_cluster = suppressWarnings(as.integer(.data$pam_k3))
+  )
+
+cluster_label_levels <- cluster_lookup %>%
+  dplyr::filter(!is.na(.data$pam_cluster)) %>%
+  dplyr::distinct(.data$pam_cluster) %>%
+  dplyr::arrange(.data$pam_cluster) %>%
+  dplyr::pull(.data$pam_cluster) %>%
+  format_cluster_label() %>%
+  c("Cluster Unknown")
 
 results <- readr::read_csv(PERMUTATION_RESULTS_INPUT_PATH, show_col_types = FALSE) %>%
   dplyr::mutate(
@@ -54,11 +91,22 @@ results <- readr::read_csv(PERMUTATION_RESULTS_INPUT_PATH, show_col_types = FALS
     ),
     plot_risk_difference = .data$risk_difference
   ) %>%
+  dplyr::filter(!is.na(.data$window)) %>%
+  dplyr::left_join(cluster_lookup, by = "patient_id") %>%
+  dplyr::mutate(
+    pam_cluster_sort = dplyr::if_else(
+      is.na(.data$pam_cluster),
+      Inf,
+      as.double(.data$pam_cluster)
+    ),
+    pam_cluster_label = factor(format_cluster_label(.data$pam_cluster), levels = cluster_label_levels)
+  ) %>%
   dplyr::filter(.data$analysis_status == "ok")
 
 patient_order <- results %>%
   dplyr::filter(.data$window == "1 day") %>%
   dplyr::arrange(
+    .data$pam_cluster_sort,
     dplyr::desc(dplyr::coalesce(.data$plot_risk_difference, -Inf)),
     .data$patient_label
   ) %>%
@@ -109,7 +157,13 @@ p_risk_difference <- ggplot2::ggplot(
     alpha = 0.95,
     na.rm = TRUE
   ) +
-  ggplot2::facet_wrap(~window, nrow = 1) +
+  ggplot2::facet_grid(
+    rows = ggplot2::vars(pam_cluster_label),
+    cols = ggplot2::vars(window),
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
   ggplot2::scale_color_manual(values = effect_colors) +
   ggplot2::scale_x_continuous(
     labels = scales::label_percent(accuracy = 1),
@@ -119,7 +173,7 @@ p_risk_difference <- ggplot2::ggplot(
   ggplot2::labs(
     title = "Patient-Level Post-Seizure Risk",
     x = "Seizure-risk difference",
-    y = NULL,
+    y = "Patient",
     color = NULL,
     caption = "Grey bars show the central 95% of the patient-window permutation null distribution. Points show observed risk differences."
   ) +
@@ -131,8 +185,10 @@ p_risk_difference <- ggplot2::ggplot(
     axis.text.y = ggplot2::element_text(size = 7),
     axis.text.x = ggplot2::element_text(size = 8),
     axis.title.x = ggplot2::element_text(size = 9, margin = ggplot2::margin(t = 8)),
-    strip.background = ggplot2::element_rect(fill = "grey92", color = NA),
+    strip.background = ggplot2::element_blank(),
     strip.text = ggplot2::element_text(face = "bold"),
+    strip.placement = "outside",
+    strip.text.y.left = ggplot2::element_text(face = "bold", angle = 0, size = 8),
     legend.position = "bottom",
     legend.text = ggplot2::element_text(size = 8),
     panel.spacing.x = grid::unit(0.8, "lines")
@@ -142,5 +198,5 @@ ggplot2::ggsave(
   filename = RISK_DIFFERENCE_PDF_OUTPUT_PATH,
   plot = p_risk_difference,
   width = 13,
-  height = 8
+  height = max(8, 0.32 * dplyr::n_distinct(plot_data$patient_label) + 3)
 )

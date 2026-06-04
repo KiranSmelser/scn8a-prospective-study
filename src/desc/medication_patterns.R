@@ -114,6 +114,81 @@ intersection_variant_label <- function(patient_ids, mutation_lookup) {
   paste(variant_labels, collapse = ", ")
 }
 
+medication_guide_category_order <- c(
+  "Sodium Channel Blockers",
+  "GABAergic",
+  "Calcium Channel Blockers",
+  "SVP2A",
+  "Other/Multiple"
+)
+
+upset_category_palette <- c(
+  "Sodium Channel Blockers" = "#1b9e77",
+  "GABAergic" = "#d95f02",
+  "Calcium Channel Blockers" = "#7570b3",
+  "SVP2A" = "#e7298a",
+  "Other/Multiple" = "#66a61e",
+  "Uncategorized" = "#666666"
+)
+
+medication_guide_map <- tribble(
+  ~medication_normalized, ~guide_category, ~guide_med_rank, ~ordering_source,
+  "carbamazepine", "Sodium Channel Blockers", 1L, "SCN8A medication guide",
+  "lacosamide", "Sodium Channel Blockers", 2L, "SCN8A medication guide",
+  "lamotrigine", "Sodium Channel Blockers", 3L, "SCN8A medication guide",
+  "oxcarbazepine", "Sodium Channel Blockers", 4L, "SCN8A medication guide",
+  "phenytoin", "Sodium Channel Blockers", 5L, "SCN8A medication guide",
+  "rufinamide", "Sodium Channel Blockers", 6L, "SCN8A medication guide",
+  "valproate", "Sodium Channel Blockers", 7L, "SCN8A medication guide",
+  "valproic acid", "Sodium Channel Blockers", 7L, "SCN8A medication guide",
+  "clobazam", "GABAergic", 1L, "SCN8A medication guide",
+  "clonazepam", "GABAergic", 2L, "SCN8A medication guide",
+  "felbamate", "GABAergic", 3L, "SCN8A medication guide",
+  "phenobarbital", "GABAergic", 5L, "SCN8A medication guide",
+  "vigabatrin", "GABAergic", 9L, "SCN8A medication guide",
+  "ethosuximide", "Calcium Channel Blockers", 1L, "SCN8A medication guide",
+  "gabapentin", "Calcium Channel Blockers", 2L, "SCN8A medication guide",
+  "zonisamide", "Calcium Channel Blockers", 3L, "SCN8A medication guide",
+  "brivaracetam", "SVP2A", 1L, "SCN8A medication guide",
+  "levetiracetam", "SVP2A", 2L, "SCN8A medication guide",
+  "topiramate", "Other/Multiple", 5L, "SCN8A medication guide",
+  "cenobamate", "Other/Multiple", 6L, "SCN8A medication guide"
+)
+
+# Fallback for medications not listed in the SCN8A guide.
+mechanism_fallback_map <- tribble(
+  ~medication_normalized, ~guide_category, ~guide_med_rank, ~ordering_source,
+  "praxis", "Sodium Channel Blockers", 8L, "Mechanism fallback: Relutrigine (PRAX-562) persistent sodium current inhibitor",
+  "cannabidiol", "Other/Multiple", 7L, "Mechanism fallback: EPIDIOLEX label reports anticonvulsant mechanism is unknown"
+)
+
+order_medications_by_guide_category <- function(medications) {
+  tibble(
+    medication = medications,
+    medication_normalized = stringr::str_to_lower(stringr::str_squish(medications))
+  ) %>%
+    left_join(medication_guide_map, by = "medication_normalized") %>%
+    left_join(mechanism_fallback_map, by = "medication_normalized", suffix = c("_guide", "_fallback")) %>%
+    mutate(
+      guide_category = coalesce(guide_category_guide, guide_category_fallback, "Other/Multiple"),
+      guide_med_rank = coalesce(guide_med_rank_guide, guide_med_rank_fallback, 999L),
+      ordering_source = coalesce(
+        ordering_source_guide,
+        ordering_source_fallback,
+        "Mechanism fallback: uncategorized"
+      ),
+      guide_category_rank = match(guide_category, medication_guide_category_order),
+      guide_category_rank = if_else(
+        is.na(guide_category_rank),
+        length(medication_guide_category_order) + 1L,
+        guide_category_rank
+      )
+    ) %>%
+    arrange(guide_category_rank, guide_med_rank, medication) %>%
+    mutate(y_axis_order = row_number()) %>%
+    select(y_axis_order, medication, guide_category, guide_med_rank, ordering_source)
+}
+
 meds <- readr::read_csv(INPUT_PATH, show_col_types = FALSE) %>%
   mutate(
     patient_id = stringr::str_squish(as.character(patient_id)),
@@ -207,10 +282,36 @@ comparison_med_totals <- comparison_long %>%
   summarise(total_n_patients = sum(n_patients), .groups = "drop") %>%
   arrange(desc(total_n_patients), name_standardized)
 
+comparison_med_order <- order_medications_by_guide_category(comparison_med_totals$name_standardized) %>%
+  left_join(comparison_med_totals, by = c("medication" = "name_standardized")) %>%
+  mutate(
+    guide_category = factor(guide_category, levels = medication_guide_category_order),
+    guide_category_rank = match(as.character(guide_category), medication_guide_category_order)
+  ) %>%
+  arrange(guide_category_rank, desc(total_n_patients), medication) %>%
+  mutate(y_axis_order = row_number()) %>%
+  select(-guide_category_rank)
+
 comparison_plot_data <- comparison_long %>%
   tidyr::complete(name_standardized, status = c("Active", "Weaned"), fill = list(n_patients = 0)) %>%
-  left_join(comparison_med_totals, by = "name_standardized") %>%
-  mutate(name_standardized = forcats::fct_reorder(name_standardized, total_n_patients))
+  left_join(
+    comparison_med_order %>%
+      select(
+        medication,
+        guide_category,
+        guide_med_rank,
+        ordering_source,
+        y_axis_order,
+        total_n_patients
+      ),
+    by = c("name_standardized" = "medication")
+  ) %>%
+  mutate(
+    name_standardized = factor(
+      name_standardized,
+      levels = rev(comparison_med_order$medication)
+    )
+  )
 
 comparison_plot <- ggplot(
   comparison_plot_data,
@@ -218,6 +319,12 @@ comparison_plot <- ggplot(
 ) +
   geom_col(position = position_dodge(width = 0.75), width = 0.65) +
   scale_fill_manual(values = c("Active" = "#1f78b4", "Weaned" = "#e31a1c")) +
+  facet_grid(
+    rows = vars(guide_category),
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
   labs(
     title = "Active vs Weaned Medications",
     x = "Number of Patients",
@@ -227,7 +334,9 @@ comparison_plot <- ggplot(
   theme_minimal(base_size = 11) +
   theme(
     panel.grid.major.y = element_blank(),
-    legend.position = "top"
+    legend.position = "top",
+    strip.placement = "outside",
+    strip.text.y.left = element_text(angle = 0, hjust = 1, face = "bold")
   )
 
 ggplot2::ggsave(
@@ -240,7 +349,7 @@ ggplot2::ggsave(
 readr::write_csv(
   comparison_plot_data %>%
     mutate(name_standardized = as.character(name_standardized)) %>%
-    arrange(desc(total_n_patients), name_standardized, status),
+    arrange(y_axis_order, status),
   file.path(OUTPUT_TAB_DIR, "active_vs_weaned_plot_data_all.csv")
 )
 
@@ -403,80 +512,7 @@ top_upset_meds <- active_medication_frequency %>%
   arrange(desc(n_patients_active), name_standardized) %>%
   pull(name_standardized)
 
-medication_guide_category_order <- c(
-  "Sodium Channel Blockers",
-  "GABAergic",
-  "Calcium Channel Blockers",
-  "SVP2A",
-  "Other/Multiple",
-  "Steroids"
-)
-
-upset_category_palette <- c(
-  "Sodium Channel Blockers" = "#1b9e77",
-  "GABAergic" = "#d95f02",
-  "Calcium Channel Blockers" = "#7570b3",
-  "SVP2A" = "#e7298a",
-  "Other/Multiple" = "#66a61e",
-  "Steroids" = "#e6ab02",
-  "Uncategorized" = "#666666"
-)
-
-medication_guide_map <- tribble(
-  ~medication_normalized, ~guide_category, ~guide_med_rank, ~ordering_source,
-  "carbamazepine", "Sodium Channel Blockers", 1L, "SCN8A medication guide",
-  "lacosamide", "Sodium Channel Blockers", 2L, "SCN8A medication guide",
-  "lamotrigine", "Sodium Channel Blockers", 3L, "SCN8A medication guide",
-  "oxcarbazepine", "Sodium Channel Blockers", 4L, "SCN8A medication guide",
-  "phenytoin", "Sodium Channel Blockers", 5L, "SCN8A medication guide",
-  "rufinamide", "Sodium Channel Blockers", 6L, "SCN8A medication guide",
-  "valproate", "Sodium Channel Blockers", 7L, "SCN8A medication guide",
-  "valproic acid", "Sodium Channel Blockers", 7L, "SCN8A medication guide",
-  "clobazam", "GABAergic", 1L, "SCN8A medication guide",
-  "clonazepam", "GABAergic", 2L, "SCN8A medication guide",
-  "felbamate", "GABAergic", 3L, "SCN8A medication guide",
-  "phenobarbital", "GABAergic", 5L, "SCN8A medication guide",
-  "vigabatrin", "GABAergic", 9L, "SCN8A medication guide",
-  "ethosuximide", "Calcium Channel Blockers", 1L, "SCN8A medication guide",
-  "gabapentin", "Calcium Channel Blockers", 2L, "SCN8A medication guide",
-  "zonisamide", "Calcium Channel Blockers", 3L, "SCN8A medication guide",
-  "brivaracetam", "SVP2A", 1L, "SCN8A medication guide",
-  "levetiracetam", "SVP2A", 2L, "SCN8A medication guide",
-  "topiramate", "Other/Multiple", 5L, "SCN8A medication guide",
-  "cenobamate", "Other/Multiple", 6L, "SCN8A medication guide"
-)
-
-# Fallback for medications not listed in the SCN8A guide.
-mechanism_fallback_map <- tribble(
-  ~medication_normalized, ~guide_category, ~guide_med_rank, ~ordering_source,
-  "praxis", "Sodium Channel Blockers", 8L, "Mechanism fallback: Relutrigine (PRAX-562) persistent sodium current inhibitor",
-  "cannabidiol", "Other/Multiple", 7L, "Mechanism fallback: EPIDIOLEX label reports anticonvulsant mechanism is unknown"
-)
-
-  upset_medication_order <- tibble(
-  medication = top_upset_meds,
-  medication_normalized = stringr::str_to_lower(stringr::str_squish(top_upset_meds))
-) %>%
-  left_join(medication_guide_map, by = "medication_normalized") %>%
-  left_join(mechanism_fallback_map, by = "medication_normalized", suffix = c("_guide", "_fallback")) %>%
-  mutate(
-    guide_category = coalesce(guide_category_guide, guide_category_fallback, "Other/Multiple"),
-    guide_med_rank = coalesce(guide_med_rank_guide, guide_med_rank_fallback, 999L),
-    ordering_source = coalesce(
-      ordering_source_guide,
-      ordering_source_fallback,
-      "Mechanism fallback: uncategorized"
-    ),
-    guide_category_rank = match(guide_category, medication_guide_category_order),
-    guide_category_rank = if_else(
-      is.na(guide_category_rank),
-      length(medication_guide_category_order) + 1L,
-      guide_category_rank
-    )
-  ) %>%
-  arrange(guide_category_rank, guide_med_rank, medication) %>%
-  mutate(y_axis_order = row_number()) %>%
-  select(y_axis_order, medication, guide_category, guide_med_rank, ordering_source)
+upset_medication_order <- order_medications_by_guide_category(top_upset_meds)
 
   top_upset_meds <- upset_medication_order$medication
   n_upset_meds <- length(top_upset_meds)
