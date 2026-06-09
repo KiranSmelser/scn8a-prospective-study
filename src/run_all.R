@@ -68,10 +68,12 @@ pipeline_steps <- data.frame(
     rep("raw-data summaries", 14),
     rep("cohort build", 2),
     "patient-month panel",
+    "cohort seizure summary",
     rep("clustering", 5),
     rep("modeling", 2),
     "changepoints",
     rep("periodicity", 4),
+    "episodicity",
     "timelines"
   ),
   script = c(
@@ -96,6 +98,7 @@ pipeline_steps <- data.frame(
     "src/seizures/build_cohort_seizure_dataset.R",
     "src/seizures/check_poisson_fit.R",
     "src/modeling/patient_month_panel.R",
+    "src/desc/cohort_seizure_summary.R",
     "src/clustering/seizure_freq_features.R",
     "src/clustering/clustering.R",
     "src/clustering/summarize_clusters.R",
@@ -108,6 +111,7 @@ pipeline_steps <- data.frame(
     "src/periodicity/patient_level_periodicity.R",
     "src/periodicity/plot_patient_level_periodicity.R",
     "src/periodicity/plot_patient_level_permutation.R",
+    "src/episodicity/patient_level_episodicity.R",
     "src/timelines/timelines.R"
   ),
   stringsAsFactors = FALSE

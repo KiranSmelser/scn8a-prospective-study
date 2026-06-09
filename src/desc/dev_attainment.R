@@ -52,33 +52,40 @@ milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv",
     achieved = .data$status_numeric %in% c(2, 3, 5)
   )
 
-milestone_labels <- c(
-  eye_ps = "Eye Control",
-  grasp_ps = "Grasp",
-  reach_ps = "Reach",
-  pincer_ps = "Pincer Grasp",
-  blocks_ps = "Build Block Tower",
-  circle_ps = "Draw Circle",
-  hc_ps = "Head Control",
-  roll_ps = "Roll Over",
-  sit_ps = "Sit",
-  stand_ps = "Stand Supported",
-  walk_ps = "Walk",
-  run_ps = "Run",
-  smile_ps = "Smile",
-  wave_ps = "Wave",
-  cup_ps = "Drink Cup",
-  fork_ps = "Use Utensils",
-  wh_ps = "Wash Hands",
-  bt_ps = "Brush Teeth",
-  vocalize_ps = "Vocalizing",
-  laugh_ps = "Laughing",
-  babble_ps = "Babbling",
-  namecolors_ps = "Name Colors",
-  words_ps = "Use 2 Words",
-  phrase_ps = "Phrases",
-  reade_ps = "Read"
-)
+dev_category_order <- c("Fine Motor", "Gross Motor", "Social", "Language")
+
+dev_domain_map <- tibble::tribble(
+  ~milestone, ~dev_category, ~dev_skill,
+  "eye_ps", "Fine Motor", "Visual tracking",
+  "grasp_ps", "Fine Motor", "Grasping",
+  "reach_ps", "Fine Motor", "Reaching",
+  "pincer_ps", "Fine Motor", "Pincer grasp",
+  "blocks_ps", "Fine Motor", "Stacking blocks",
+  "circle_ps", "Fine Motor", "Drawing circles",
+  "hc_ps", "Gross Motor", "Head control",
+  "roll_ps", "Gross Motor", "Rolling over",
+  "sit_ps", "Gross Motor", "Sitting independently",
+  "stand_ps", "Gross Motor", "Standing independently",
+  "walk_ps", "Gross Motor", "Walking independently",
+  "run_ps", "Gross Motor", "Running",
+  "smile_ps", "Social", "Social smiling",
+  "wave_ps", "Social", "Waving",
+  "cup_ps", "Social", "Using cup",
+  "fork_ps", "Social", "Using spoon",
+  "wh_ps", "Social", "Washing hands",
+  "bt_ps", "Social", "Brushing teeth",
+  "vocalize_ps", "Language", "Vocalizing",
+  "laugh_ps", "Language", "Laughing",
+  "babble_ps", "Language", "Babbling",
+  "words_ps", "Language", "Two-word phrases",
+  "phrase_ps", "Language", "Full phrases",
+  "namecolors_ps", "Language", "Naming colors",
+  "reade_ps", "Language", "Reading"
+) %>%
+  dplyr::mutate(
+    dev_category = factor(.data$dev_category, levels = dev_category_order),
+    dev_skill_order = dplyr::row_number()
+  )
 
 patient_milestone_attainment <- milestones_raw %>%
   dplyr::filter(!is.na(.data$status_numeric)) %>%
@@ -99,22 +106,31 @@ milestones_summary <- patient_milestone_attainment %>%
     pct_achieved = dplyr::if_else(.data$patients_with_status > 0, .data$achieved_patients / .data$patients_with_status, 0),
     .groups = "drop"
   ) %>%
+  dplyr::left_join(dev_domain_map, by = "milestone") %>%
   dplyr::mutate(
-    milestone_label = dplyr::recode(.data$milestone, !!!milestone_labels, .default = str_to_title(str_replace_all(.data$milestone, "_", " "))),
+    dev_category = tidyr::replace_na(.data$dev_category, "Unmapped"),
+    dev_category = factor(.data$dev_category, levels = c(dev_category_order, "Unmapped")),
+    dev_skill = dplyr::coalesce(.data$dev_skill, str_to_title(str_replace_all(.data$milestone, "_", " "))),
+    dev_skill_order = tidyr::replace_na(.data$dev_skill_order, 999L),
     pam_cluster = factor(.data$pam_cluster, levels = sort(unique(.data$pam_cluster))),
     pct_achieved = tidyr::replace_na(.data$pct_achieved, 0)
   ) %>%
-  dplyr::group_by(.data$milestone, .data$milestone_label) %>%
+  dplyr::group_by(.data$milestone, .data$dev_category, .data$dev_skill, .data$dev_skill_order) %>%
   dplyr::mutate(total_pct_achieved = sum(.data$pct_achieved, na.rm = TRUE)) %>%
   dplyr::ungroup() %>%
-  dplyr::arrange(dplyr::desc(.data$total_pct_achieved), .data$pam_cluster)
+  dplyr::arrange(.data$dev_category, .data$dev_skill_order, .data$pam_cluster)
+
+dev_skill_levels <- milestones_summary %>%
+  dplyr::distinct(.data$dev_category, .data$dev_skill_order, .data$dev_skill) %>%
+  dplyr::arrange(.data$dev_category, .data$dev_skill_order, .data$dev_skill) %>%
+  dplyr::pull(.data$dev_skill)
 
 p_dev_attainment <- milestones_summary %>%
   dplyr::mutate(
-    milestone_label = stats::reorder(.data$milestone_label, .data$total_pct_achieved),
+    dev_skill = factor(.data$dev_skill, levels = rev(dev_skill_levels)),
     pct_label = dplyr::if_else(.data$pct_achieved > 0, scales::percent(.data$pct_achieved, accuracy = 1), NA_character_)
   ) %>%
-  ggplot(aes(x = .data$milestone_label, y = .data$pct_achieved, fill = .data$pam_cluster)) +
+  ggplot(aes(x = .data$pct_achieved, y = .data$dev_skill, fill = .data$pam_cluster)) +
   geom_col(color = "white", linewidth = 0.2) +
   geom_text(
     aes(label = .data$pct_label),
@@ -123,18 +139,25 @@ p_dev_attainment <- milestones_summary %>%
     color = "#1F2933",
     na.rm = TRUE
   ) +
-  coord_flip() +
-  scale_y_continuous(labels = label_percent(accuracy = 1), expand = expansion(mult = c(0, 0.05))) +
+  scale_x_continuous(labels = label_percent(accuracy = 1), expand = expansion(mult = c(0, 0.05))) +
   scale_fill_brewer(palette = "Set2", name = "Cluster") +
+  facet_grid(
+    rows = vars(dev_category),
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
   labs(
-    x = "Developmental Milestone",
-    y = "Patients",
+    x = "Patients",
+    y = NULL,
     title = "Developmental Milestone Attainment",
   ) +
   theme_minimal(base_size = 12) +
   theme(
-    axis.title.y = element_blank(),
-    legend.position = "bottom"
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom",
+    strip.placement = "outside",
+    strip.text.y.left = element_text(angle = 0, hjust = 1, face = "bold")
   )
 
 png_output_path <- "output/figs/dev_attainment.png"

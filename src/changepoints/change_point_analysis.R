@@ -9,6 +9,8 @@ suppressPackageStartupMessages({
   library(MASS)
 })
 
+source("src/analysis_config.R")
+
 PANEL_INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 SEIZURE_INPUT_PATH <- "output/tabs/seizures/seizures.csv"
 OUTPUT_DIR <- "output/tabs/changepoints"
@@ -116,7 +118,7 @@ summarise_segment <- function(data, segment_label) {
     weeks = nrow(data),
     observed_days = total_days,
     seizure_count = total_seizures,
-    rate_per_30_days = ifelse(total_days > 0, 30 * total_seizures / total_days, NA_real_)
+    rate_per_28_days = ifelse(total_days > 0, STANDARD_MONTH_DAYS * total_seizures / total_days, NA_real_)
   )
 }
 
@@ -231,10 +233,10 @@ candidate_summary <- function(weekly_data, split_start, theta, null_log_likeliho
     post_observed_days = post$observed_days,
     pre_seizure_count = pre$seizure_count,
     post_seizure_count = post$seizure_count,
-    pre_rate_per_30_days = pre$rate_per_30_days,
-    post_rate_per_30_days = post$rate_per_30_days,
-    rate_ratio_post_vs_pre = rate_ratio_post_vs_pre(pre$rate_per_30_days, post$rate_per_30_days),
-    direction = rate_change_direction(pre$rate_per_30_days, post$rate_per_30_days),
+    pre_rate_per_28_days = pre$rate_per_28_days,
+    post_rate_per_28_days = post$rate_per_28_days,
+    rate_ratio_post_vs_pre = rate_ratio_post_vs_pre(pre$rate_per_28_days, post$rate_per_28_days),
+    direction = rate_change_direction(pre$rate_per_28_days, post$rate_per_28_days),
     lrt_statistic = lrt_statistic,
     raw_p_value = stats::pchisq(lrt_statistic, df = 1, lower.tail = FALSE),
     model_status = ifelse(is.finite(lrt_statistic), "ok", "likelihood_failed"),
@@ -261,8 +263,8 @@ scan_patient_candidates <- function(weekly_data, theta) {
       post_observed_days = integer(),
       pre_seizure_count = integer(),
       post_seizure_count = integer(),
-      pre_rate_per_30_days = numeric(),
-      post_rate_per_30_days = numeric(),
+      pre_rate_per_28_days = numeric(),
+      post_rate_per_28_days = numeric(),
       rate_ratio_post_vs_pre = numeric(),
       direction = character(),
       lrt_statistic = numeric(),
@@ -400,7 +402,7 @@ build_segment_table <- function(weekly_data, segmentation, theta, theta_status) 
       weeks = segment_summary$weeks,
       observed_days = segment_summary$observed_days,
       seizure_count = segment_summary$seizure_count,
-      rate_per_30_days = segment_summary$rate_per_30_days,
+      rate_per_28_days = segment_summary$rate_per_28_days,
       log_likelihood = segment_log_likelihood_value,
       theta = theta,
       theta_status = theta_status,
@@ -530,8 +532,8 @@ empty_patient_change_point_row <- function(patient_summary, theta, theta_status,
       post_observed_days = NA_integer_,
       pre_seizure_count = NA_integer_,
       post_seizure_count = NA_integer_,
-      pre_rate_per_30_days = NA_real_,
-      post_rate_per_30_days = NA_real_,
+      pre_rate_per_28_days = NA_real_,
+      post_rate_per_28_days = NA_real_,
       rate_ratio_post_vs_pre = NA_real_,
       direction = NA_character_,
       lrt_statistic = NA_real_,
@@ -580,8 +582,8 @@ build_change_point_table <- function(weekly_data, patient_summary, segmentation,
       observed_lrt = lrt_statistic,
       n_bootstrap = BOOTSTRAP_REPLICATES
     )
-    pre_rate <- pre_segment$rate_per_30_days[[1]]
-    post_rate <- post_segment$rate_per_30_days[[1]]
+    pre_rate <- pre_segment$rate_per_28_days[[1]]
+    post_rate <- post_segment$rate_per_28_days[[1]]
     rate_ratio <- rate_ratio_post_vs_pre(pre_rate, post_rate)
 
     patient_summary %>%
@@ -598,8 +600,8 @@ build_change_point_table <- function(weekly_data, patient_summary, segmentation,
         post_observed_days = post_segment$observed_days[[1]],
         pre_seizure_count = pre_segment$seizure_count[[1]],
         post_seizure_count = post_segment$seizure_count[[1]],
-        pre_rate_per_30_days = pre_rate,
-        post_rate_per_30_days = post_rate,
+        pre_rate_per_28_days = pre_rate,
+        post_rate_per_28_days = post_rate,
         rate_ratio_post_vs_pre = rate_ratio,
         direction = rate_change_direction(pre_rate, post_rate),
         lrt_statistic = lrt_statistic,
@@ -708,7 +710,7 @@ patient_summaries <- weekly_counts %>%
     study_end_date = max(.data$study_end_date),
     first_observed_date = min(.data$observed_start),
     last_observed_date = max(.data$observed_end),
-    mean_rate_per_30_days = 30 * .data$total_seizure_events / .data$total_observed_days,
+    mean_rate_per_28_days = STANDARD_MONTH_DAYS * .data$total_seizure_events / .data$total_observed_days,
     .groups = "drop"
   )
 

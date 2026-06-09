@@ -1,6 +1,7 @@
 # Shared analysis date limits.
 
 ANALYSIS_CUTOFF_DATE <- as.Date("2026-05-31")
+STANDARD_MONTH_DAYS <- 28L
 
 TARGET_PATIENT_IDS <- c(
   "67b6126de8efcd6464eeb8c4",

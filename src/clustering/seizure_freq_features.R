@@ -10,7 +10,6 @@ source("src/analysis_config.R")
 INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 OUTPUT_DIR <- "output/tabs/clustering"
 OUTPUT_PATH <- file.path(OUTPUT_DIR, "seizure_freq_features.csv")
-STANDARD_MONTH_DAYS <- 30
 
 dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
 

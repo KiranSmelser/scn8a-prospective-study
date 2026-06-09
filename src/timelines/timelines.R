@@ -840,12 +840,12 @@ plot_patient_timeline <- function(pt_id) {
     latest_date <- current_date
   }
   if (!is.finite(earliest_date)) {
-    earliest_date <- if (!is.na(pt_app_activity_date)) pt_app_activity_date else latest_date - 30
+    earliest_date <- if (!is.na(pt_app_activity_date)) pt_app_activity_date else latest_date - STANDARD_MONTH_DAYS
   }
 
   plot_end_date <- min(latest_date, current_date)
   if (earliest_date > plot_end_date) {
-    earliest_date <- plot_end_date - 30
+    earliest_date <- plot_end_date - STANDARD_MONTH_DAYS
   }
   pt_change_point_markers <- pt_change_points %>%
     transmute(
@@ -905,14 +905,7 @@ plot_patient_timeline <- function(pt_id) {
         TRUE ~ "#8A9197"
       )
     )
-  n_months_plotted <- length(seq(
-    floor_date(earliest_date, unit = "month"),
-    floor_date(plot_end_date, unit = "month"),
-    by = "1 month"
-  ))
-  if (n_months_plotted < 1) {
-    n_months_plotted <- 1L
-  }
+  n_months_plotted <- max(as.numeric(plot_end_date - earliest_date + 1L) / STANDARD_MONTH_DAYS, 1)
   avg_seizures_per_month <- nrow(pt_seizures) / n_months_plotted
   avg_seizure_text <- sprintf(
     "Average seizures/month: %.2f",
