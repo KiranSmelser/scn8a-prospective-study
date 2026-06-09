@@ -5,23 +5,7 @@ suppressPackageStartupMessages({
 })
 
 source("src/desc/seizure_type_standardization.R")
-
-PATIENT_START_DATES <- tibble::tibble(
-  patient_id = c(
-    "67b59b49e8efcd6464eeb595",
-    "690a3a45b2c2dee67c5423d6",
-    "68d58414b783c7baf7292504",
-    "691b83cb7db39ba79465d9cf",
-    "6808969d5413b5941d3d58d8"
-  ),
-  min_event_date = as.Date(c(
-    "2025-08-28",
-    "2025-12-26",
-    "2025-10-04",
-    "2025-12-14",
-    "2025-05-13"
-  ))
-)
+source("src/analysis_config.R")
 
 OUTPUT_TAB_DIR <- "output/tabs/seizures"
 OUTPUT_PATH <- file.path(OUTPUT_TAB_DIR, "seizures.csv")

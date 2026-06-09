@@ -116,6 +116,10 @@ max_date_or_na <- function(x) {
   if (length(x) == 0) as.Date(NA) else max(x)
 }
 
+timeline_start_floor <- function(app_activity_date, min_event_date) {
+  max_date_or_na(c(app_activity_date, min_event_date))
+}
+
 # Merge overlapping medication intervals
 merge_intervals <- function(intervals_df) {
   if (nrow(intervals_df) == 0) {
@@ -704,6 +708,7 @@ medication_refs_missing_metadata_summary <- medication_refs_missing_metadata %>%
 
 timeline_qc <- patient_order %>%
   left_join(patient_names, by = "patient_id") %>%
+  left_join(PATIENT_START_DATES, by = "patient_id") %>%
   left_join(app_activity_dates, by = "patient_id") %>%
   left_join(seizure_summary, by = "patient_id") %>%
   left_join(med_summary, by = "patient_id") %>%
@@ -738,8 +743,11 @@ timeline_qc <- patient_order %>%
       )
       dates <- dates[!is.na(dates)]
       start_date <- if (length(dates) == 0) as.Date(NA) else min(dates)
-      if (isTRUE(!is.na(app_activity_date) && n_significant_change_points == 0L)) {
-        max(start_date, app_activity_date)
+      start_floor <- timeline_start_floor(app_activity_date, min_event_date)
+      if (!is.na(start_date) && !is.na(start_floor)) {
+        max(start_date, start_floor)
+      } else if (!is.na(start_floor)) {
+        start_floor
       } else {
         start_date
       }
@@ -756,7 +764,13 @@ timeline_qc <- patient_order %>%
   ) %>%
   ungroup() %>%
   mutate(
-    timeline_end_date = if_else(is.na(timeline_end_date), timeline_end_date, pmin(timeline_end_date, current_date))
+    timeline_end_date = if_else(is.na(timeline_end_date), timeline_end_date, pmin(timeline_end_date, current_date)),
+    timeline_end_date = case_when(
+      is.na(timeline_start_date) ~ timeline_end_date,
+      is.na(timeline_end_date) ~ timeline_start_date,
+      timeline_end_date < timeline_start_date ~ timeline_start_date,
+      TRUE ~ timeline_end_date
+    )
   )
 
 readr::write_csv(timeline_qc, "output/tabs/helpilepsy_timeline_qc.csv")
@@ -784,6 +798,8 @@ plot_patient_timeline <- function(pt_id) {
   pt_app_usage <- app_usage_daily %>% filter(patient_id == pt_id)
   pt_diary <- scn8a_diary_events %>% filter(patient_id == pt_id)
   pt_change_points <- change_point_markers %>% filter(patient_id == pt_id)
+  pt_min_event_date <- PATIENT_START_DATES %>% filter(patient_id == pt_id) %>%
+    pull(min_event_date) %>% first()
   pt_completed_prospective <- prospective_survey_completion %>% filter(patient_id == pt_id) %>%
     pull(patient_id) %>% length() > 0
   pt_entered_development_module <- development_module_answered %>% filter(patient_id == pt_id) %>%
@@ -792,6 +808,7 @@ plot_patient_timeline <- function(pt_id) {
   show_no_entered_skills_label <- pt_completed_prospective && !pt_entered_development_module && nrow(pt_milestones) == 0
   pt_app_activity_date <- app_activity_dates %>% filter(patient_id == pt_id) %>%
     pull(app_activity_date) %>% first()
+  pt_start_floor <- timeline_start_floor(pt_app_activity_date, pt_min_event_date)
 
   if (
     nrow(pt_meds) == 0 &&
@@ -835,17 +852,20 @@ plot_patient_timeline <- function(pt_id) {
   if (!is.na(pt_app_activity_date) && nrow(pt_change_points) == 0) {
     earliest_date <- max(earliest_date, pt_app_activity_date, na.rm = TRUE)
   }
+  if (!is.na(pt_start_floor)) {
+    earliest_date <- max(earliest_date, pt_start_floor, na.rm = TRUE)
+  }
 
   if (!is.finite(latest_date)) {
-    latest_date <- current_date
+    latest_date <- if (!is.na(pt_start_floor)) pt_start_floor else current_date
   }
   if (!is.finite(earliest_date)) {
-    earliest_date <- if (!is.na(pt_app_activity_date)) pt_app_activity_date else latest_date - STANDARD_MONTH_DAYS
+    earliest_date <- if (!is.na(pt_start_floor)) pt_start_floor else latest_date - STANDARD_MONTH_DAYS
   }
 
   plot_end_date <- min(latest_date, current_date)
   if (earliest_date > plot_end_date) {
-    earliest_date <- plot_end_date - STANDARD_MONTH_DAYS
+    plot_end_date <- earliest_date
   }
   pt_change_point_markers <- pt_change_points %>%
     transmute(
@@ -905,6 +925,12 @@ plot_patient_timeline <- function(pt_id) {
         TRUE ~ "#8A9197"
       )
     )
+  pt_milestones <- pt_milestones %>%
+    mutate(
+      start_plot_date = pmax(start_date, earliest_date),
+      end_plot_date = pmin(end_date, plot_end_date)
+    ) %>%
+    filter(start_plot_date <= plot_end_date, end_plot_date >= earliest_date)
   n_months_plotted <- max(as.numeric(plot_end_date - earliest_date + 1L) / STANDARD_MONTH_DAYS, 1)
   avg_seizures_per_month <- nrow(pt_seizures) / n_months_plotted
   avg_seizure_text <- sprintf(
@@ -991,7 +1017,7 @@ plot_patient_timeline <- function(pt_id) {
     p <- p +
       geom_segment(
         data = pt_milestones,
-        aes(x = start_date, xend = end_date, y = milestone_label, yend = milestone_label),
+        aes(x = start_plot_date, xend = end_plot_date, y = milestone_label, yend = milestone_label),
         color = "#1A9993",
         linewidth = 2
       )
