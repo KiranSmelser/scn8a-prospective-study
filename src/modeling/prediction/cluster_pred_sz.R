@@ -1,4 +1,4 @@
-# Predict cluster membership from early seizure data.
+# Predict cluster membership from seizure data.
 
 suppressPackageStartupMessages({
   library(dplyr)
@@ -13,7 +13,7 @@ suppressPackageStartupMessages({
 SEIZURES_INPUT_PATH <- "output/tabs/seizures/seizures.csv"
 PANEL_INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
-OUTPUT_DIR <- "output/tabs/modeling/prediction"
+OUTPUT_DIR <- "output/tabs/modeling/prediction/seizure"
 
 FEATURES_OUTPUT_PATH <- file.path(OUTPUT_DIR, "early_seizure_features.csv")
 PREDICTIONS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "ridge_multinomial_early_cluster_predictions.csv")
