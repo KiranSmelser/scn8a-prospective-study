@@ -50,6 +50,7 @@ required_inputs <- c(
   "data/patients.csv",
   "data/prospective_development_milestones.csv",
   "data/prospective_surveys.csv",
+  "data/registry.csv",
   "data/whatsapp_status.csv"
 )
 
@@ -70,7 +71,7 @@ pipeline_steps <- data.frame(
     "patient-month panel",
     "cohort seizure summary",
     rep("clustering", 5),
-    "prediction",
+    rep("prediction", 2),
     rep("modeling", 2),
     "changepoints",
     rep("periodicity", 4),
@@ -105,6 +106,7 @@ pipeline_steps <- data.frame(
     "src/clustering/summarize_clusters.R",
     "src/clustering/plot_clustering.R",
     "src/modeling/prediction/cluster_pred_sz.R",
+    "src/modeling/prediction/cluster_pred_table.R",
     "src/desc/dev_attainment.R",
     "src/modeling/modeling.R",
     "src/modeling/plot_model_coefficients.R",

@@ -21,8 +21,19 @@ PERFORMANCE_OUTPUT_PATH <- file.path(OUTPUT_DIR, "ridge_multinomial_early_cluste
 CONFUSION_OUTPUT_PATH <- file.path(OUTPUT_DIR, "ridge_multinomial_early_cluster_confusion_matrix.csv")
 AUC_OUTPUT_PATH <- file.path(OUTPUT_DIR, "ridge_multinomial_early_cluster_auc.csv")
 COEFFICIENTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "ridge_multinomial_early_cluster_coefficients.csv")
+ROLLING_FEATURES_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_seizure_window_features.csv")
+ROLLING_WINDOW_PREDICTIONS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_window_predictions.csv")
+ROLLING_WINDOW_PERFORMANCE_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_window_performance.csv")
+ROLLING_WINDOW_CONFUSION_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_window_confusion_matrix.csv")
+ROLLING_WINDOW_AUC_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_window_auc.csv")
+ROLLING_PATIENT_PREDICTIONS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_patient_predictions.csv")
+ROLLING_PATIENT_PERFORMANCE_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_patient_performance.csv")
+ROLLING_PATIENT_CONFUSION_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_patient_confusion_matrix.csv")
+ROLLING_PERIOD_PERFORMANCE_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_period_performance.csv")
+ROLLING_COEFFICIENTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "rolling_ridge_multinomial_coefficients.csv")
 
 HORIZON_WEEKS <- c(4L, 6L, 8L)
+ROLLING_STEP_DAYS <- 7L
 RANDOM_SEED <- 20260609L
 RIDGE_ALPHA <- 0
 INNER_CV_MAX_FOLDS <- 5L
@@ -188,7 +199,8 @@ build_metrics <- function(data, cluster_levels) {
     as.matrix()
 
   tibble::tibble(
-    n_patients = nrow(data),
+    n_observations = nrow(data),
+    n_patients = dplyr::n_distinct(data$patient_id),
     n_clusters = length(cluster_levels),
     min_cluster_n = min(as.integer(table(truth))),
     accuracy = mean(truth == predicted),
@@ -240,6 +252,169 @@ build_coefficient_table <- function(cv_fit, horizon_weeks, feature_names, cluste
   ) %>%
     mutate(
       feature_in_model = .data$term %in% c("(Intercept)", feature_names)
+    )
+}
+
+add_predicted_class <- function(data, cluster_levels) {
+  probability_columns <- paste0("prob_cluster_", cluster_levels)
+  probability_matrix <- data %>%
+    select(all_of(probability_columns)) %>%
+    as.matrix()
+
+  data %>%
+    mutate(
+      predicted_pam_k3 = cluster_levels[max.col(probability_matrix, ties.method = "first")],
+      correct = .data$predicted_pam_k3 == as.character(.data$true_pam_k3)
+    )
+}
+
+build_confusion_table <- function(data, horizon_values) {
+  data %>%
+    count(.data$horizon_weeks, true_pam_k3 = .data$true_pam_k3, predicted_pam_k3 = .data$predicted_pam_k3, name = "n") %>%
+    complete(
+      horizon_weeks = horizon_values,
+      true_pam_k3 = cluster_levels,
+      predicted_pam_k3 = cluster_levels,
+      fill = list(n = 0L)
+    ) %>%
+    arrange(.data$horizon_weeks, .data$true_pam_k3, .data$predicted_pam_k3)
+}
+
+build_performance_table <- function(data) {
+  data %>%
+    group_by(.data$horizon_weeks) %>%
+    group_modify(~ build_metrics(.x, cluster_levels)) %>%
+    ungroup() %>%
+    arrange(.data$horizon_weeks)
+}
+
+build_multiclass_auc_table <- function(data) {
+  data %>%
+    group_by(.data$horizon_weeks) %>%
+    group_modify(~ build_auc_table(.x, cluster_levels)) %>%
+    ungroup() %>%
+    group_by(.data$horizon_weeks) %>%
+    mutate(macro_one_vs_rest_auc = mean(.data$one_vs_rest_auc, na.rm = TRUE)) %>%
+    ungroup() %>%
+    arrange(.data$horizon_weeks, .data$class)
+}
+
+build_window_feature_table <- function(analysis_windows, seizure_events) {
+  if (nrow(analysis_windows) == 0) {
+    return(tibble())
+  }
+
+  week_panel <- analysis_windows %>%
+    select("window_id", "patient_id", "horizon_weeks", "window_start_date") %>%
+    group_by(.data$window_id, .data$patient_id, .data$horizon_weeks, .data$window_start_date) %>%
+    group_modify(~ tibble::tibble(week_index = seq_len(unique(.y$horizon_weeks)))) %>%
+    ungroup() %>%
+    mutate(
+      week_start_date = .data$window_start_date + (.data$week_index - 1L) * 7L,
+      week_end_date = .data$week_start_date + 6L
+    )
+
+  window_events <- seizure_events %>%
+    inner_join(
+      analysis_windows %>% select("window_id", "patient_id", "window_start_date", "window_end_date"),
+      by = "patient_id",
+      relationship = "many-to-many"
+    ) %>%
+    filter(
+      .data$event_date >= .data$window_start_date,
+      .data$event_date <= .data$window_end_date
+    ) %>%
+    mutate(
+      days_since_window_start = as.integer(.data$event_date - .data$window_start_date),
+      week_index = as.integer(floor(.data$days_since_window_start / 7L) + 1L),
+      during_sleep_known = .data$during_sleep %in% c("yes", "no", "true", "false"),
+      during_sleep_yes = .data$during_sleep %in% c("yes", "true")
+    )
+
+  weekly_counts <- week_panel %>%
+    left_join(
+      window_events %>%
+        count(.data$window_id, .data$week_index, name = "weekly_seizure_count"),
+      by = c("window_id", "week_index")
+    ) %>%
+    mutate(weekly_seizure_count = tidyr::replace_na(.data$weekly_seizure_count, 0L))
+
+  weekly_features <- weekly_counts %>%
+    group_by(.data$window_id) %>%
+    summarise(
+      total_seizures = sum(.data$weekly_seizure_count),
+      mean_weekly_seizures = mean(.data$weekly_seizure_count),
+      median_weekly_seizures = stats::median(.data$weekly_seizure_count),
+      max_weekly_seizures = max(.data$weekly_seizure_count),
+      sd_weekly_seizures = safe_sd(.data$weekly_seizure_count),
+      iqr_weekly_seizures = stats::IQR(.data$weekly_seizure_count),
+      proportion_zero_seizure_weeks = mean(.data$weekly_seizure_count == 0),
+      .groups = "drop"
+    )
+
+  event_features <- window_events %>%
+    arrange(.data$window_id, .data$event_datetime) %>%
+    group_by(.data$window_id) %>%
+    mutate(
+      interseizure_interval_days = as.numeric(
+        difftime(.data$event_datetime, lag(.data$event_datetime), units = "days")
+      )
+    ) %>%
+    summarise(
+      first_seizure_day = min(.data$days_since_window_start) + 1L,
+      last_seizure_day = max(.data$days_since_window_start) + 1L,
+      mean_interseizure_interval_days = safe_mean(
+        .data$interseizure_interval_days,
+        default = as.integer(first(.data$window_end_date - .data$window_start_date + 1L))
+      ),
+      n_seizure_types = dplyr::n_distinct(.data$seizure_type[!is.na(.data$seizure_type)]),
+      mean_duration_seconds = safe_mean(.data$duration_seconds),
+      max_duration_seconds = safe_max(.data$duration_seconds),
+      proportion_during_sleep_yes = if (sum(.data$during_sleep_known) == 0) {
+        0
+      } else {
+        mean(.data$during_sleep_yes[.data$during_sleep_known])
+      },
+      during_sleep_known_proportion = mean(.data$during_sleep_known),
+      .groups = "drop"
+    )
+
+  analysis_windows %>%
+    left_join(weekly_features, by = "window_id") %>%
+    left_join(event_features, by = "window_id") %>%
+    mutate(
+      across(
+        all_of(c(
+          "first_seizure_day",
+          "last_seizure_day",
+          "mean_interseizure_interval_days",
+          "n_seizure_types",
+          "mean_duration_seconds",
+          "max_duration_seconds",
+          "proportion_during_sleep_yes",
+          "during_sleep_known_proportion"
+        )),
+        ~ tidyr::replace_na(.x, 0)
+      ),
+      first_seizure_day = if_else(.data$total_seizures == 0, .data$horizon_days, .data$first_seizure_day),
+      mean_interseizure_interval_days = if_else(
+        .data$total_seizures < 2,
+        .data$horizon_days,
+        .data$mean_interseizure_interval_days
+      ),
+      seizure_rate_per_28_days = .data$total_seizures / .data$horizon_days * 28,
+      first_seizure_day_fraction = .data$first_seizure_day / .data$horizon_days,
+      last_seizure_day_fraction = .data$last_seizure_day / .data$horizon_days,
+      log1p_total_seizures = log1p(.data$total_seizures),
+      log1p_seizure_rate_per_28_days = log1p(.data$seizure_rate_per_28_days),
+      log1p_mean_weekly_seizures = log1p(.data$mean_weekly_seizures),
+      log1p_median_weekly_seizures = log1p(.data$median_weekly_seizures),
+      log1p_max_weekly_seizures = log1p(.data$max_weekly_seizures),
+      log1p_sd_weekly_seizures = log1p(.data$sd_weekly_seizures),
+      log1p_iqr_weekly_seizures = log1p(.data$iqr_weekly_seizures),
+      log1p_mean_interseizure_interval_days = log1p(.data$mean_interseizure_interval_days),
+      log1p_mean_duration_seconds = log1p(.data$mean_duration_seconds),
+      log1p_max_duration_seconds = log1p(.data$max_duration_seconds)
     )
 }
 
@@ -551,3 +726,205 @@ coefficient_table <- purrr::map_dfr(
 )
 
 readr::write_csv(coefficient_table, COEFFICIENTS_OUTPUT_PATH)
+
+rolling_windows <- purrr::map_dfr(
+  HORIZON_WEEKS,
+  function(horizon_value) {
+    horizon_week_count <- as.integer(horizon_value)
+    horizon_days <- as.integer(horizon_week_count * 7L)
+
+    patient_windows %>%
+      mutate(
+        horizon_weeks = horizon_week_count,
+        horizon_days = horizon_days,
+        observed_days = as.integer(.data$study_end_date - .data$study_start_date + 1L),
+        last_window_start_date = .data$study_end_date - horizon_days + 1L
+      ) %>%
+      filter(
+        .data$observed_days >= horizon_days,
+        .data$last_window_start_date >= .data$study_start_date
+      ) %>%
+      rowwise() %>%
+      mutate(
+        window_start_date = list(seq(
+          from = .data$study_start_date,
+          to = .data$last_window_start_date,
+          by = paste(ROLLING_STEP_DAYS, "days")
+        ))
+      ) %>%
+      ungroup() %>%
+      select(
+        "patient_id",
+        "variant_p",
+        "horizon_weeks",
+        "horizon_days",
+        "observed_days",
+        "window_start_date"
+      ) %>%
+      tidyr::unnest("window_start_date") %>%
+      group_by(.data$patient_id, .data$horizon_weeks) %>%
+      arrange(.data$window_start_date, .by_group = TRUE) %>%
+      mutate(
+        period_index = row_number(),
+        window_end_date = .data$window_start_date + .data$horizon_days - 1L,
+        window_id = paste(.data$patient_id, .data$horizon_weeks, .data$period_index, sep = "__")
+      ) %>%
+      ungroup()
+  }
+) %>%
+  select(
+    "window_id",
+    "patient_id",
+    "variant_p",
+    "horizon_weeks",
+    "horizon_days",
+    "period_index",
+    "window_start_date",
+    "window_end_date",
+    "observed_days"
+  ) %>%
+  arrange(.data$horizon_weeks, .data$patient_id, .data$period_index)
+
+rolling_feature_table <- build_window_feature_table(rolling_windows, seizure_events) %>%
+  inner_join(cluster_lookup, by = "patient_id") %>%
+  arrange(.data$horizon_weeks, .data$patient_id, .data$period_index)
+
+if (nrow(rolling_feature_table) == 0) {
+  stop("No rolling windows were available for the requested horizons.", call. = FALSE)
+}
+
+if (any(!is.finite(as.matrix(rolling_feature_table %>% select(all_of(MODEL_FEATURES)))))) {
+  stop("Rolling seizure feature matrix contains non-finite values.", call. = FALSE)
+}
+
+readr::write_csv(rolling_feature_table, ROLLING_FEATURES_OUTPUT_PATH)
+
+set.seed(RANDOM_SEED)
+
+rolling_prediction_table <- purrr::map_dfr(
+  HORIZON_WEEKS,
+  function(horizon_weeks) {
+    horizon_data <- rolling_feature_table %>%
+      filter(.data$horizon_weeks == !!horizon_weeks) %>%
+      mutate(pam_k3 = factor(as.character(.data$pam_k3), levels = cluster_levels)) %>%
+      arrange(.data$patient_id, .data$period_index)
+
+    if (n_distinct(horizon_data$pam_k3) < length(cluster_levels)) {
+      stop("Rolling horizon ", horizon_weeks, " weeks does not contain all cluster classes.", call. = FALSE)
+    }
+
+    purrr::map_dfr(
+      sort(unique(horizon_data$patient_id)),
+      function(test_patient_id) {
+        training_data <- horizon_data %>%
+          filter(.data$patient_id != test_patient_id)
+        test_data <- horizon_data %>%
+          filter(.data$patient_id == test_patient_id)
+
+        if (n_distinct(training_data$pam_k3) < length(cluster_levels)) {
+          stop(
+            "Training data for held-out patient ",
+            test_patient_id,
+            " at horizon ",
+            horizon_weeks,
+            " weeks does not contain all cluster classes.",
+            call. = FALSE
+          )
+        }
+
+        x_train <- training_data %>% select(all_of(MODEL_FEATURES)) %>% as.matrix()
+        y_train <- factor(as.character(training_data$pam_k3), levels = cluster_levels)
+        x_test <- test_data %>% select(all_of(MODEL_FEATURES)) %>% as.matrix()
+
+        cv_fit <- fit_cv_ridge_multinomial(x_train, y_train)
+        probability_array <- predict(cv_fit, newx = x_test, s = "lambda.min", type = "response")
+        predicted_classes <- dimnames(probability_array)[[2]]
+        probability_matrix <- matrix(
+          0,
+          nrow = nrow(test_data),
+          ncol = length(cluster_levels),
+          dimnames = list(NULL, cluster_levels)
+        )
+        probability_matrix[, predicted_classes] <- probability_array[, predicted_classes, 1, drop = FALSE]
+
+        test_data %>%
+          transmute(
+            horizon_weeks = .data$horizon_weeks,
+            window_id = .data$window_id,
+            patient_id = .data$patient_id,
+            variant_p = .data$variant_p,
+            period_index = .data$period_index,
+            window_start_date = .data$window_start_date,
+            window_end_date = .data$window_end_date,
+            true_pam_k3 = as.character(.data$pam_k3),
+            lambda_min = as.numeric(cv_fit$lambda.min),
+            lambda_1se = as.numeric(cv_fit$lambda.1se)
+          ) %>%
+          bind_cols(
+            as_tibble(probability_matrix, .name_repair = ~ paste0("prob_cluster_", .x))
+          ) %>%
+          add_predicted_class(cluster_levels)
+      }
+    )
+  }
+)
+
+readr::write_csv(rolling_prediction_table, ROLLING_WINDOW_PREDICTIONS_OUTPUT_PATH)
+
+rolling_window_performance_table <- build_performance_table(rolling_prediction_table)
+readr::write_csv(rolling_window_performance_table, ROLLING_WINDOW_PERFORMANCE_OUTPUT_PATH)
+
+rolling_window_confusion_table <- build_confusion_table(rolling_prediction_table, HORIZON_WEEKS)
+readr::write_csv(rolling_window_confusion_table, ROLLING_WINDOW_CONFUSION_OUTPUT_PATH)
+
+rolling_window_auc_table <- build_multiclass_auc_table(rolling_prediction_table)
+readr::write_csv(rolling_window_auc_table, ROLLING_WINDOW_AUC_OUTPUT_PATH)
+
+probability_columns <- paste0("prob_cluster_", cluster_levels)
+
+rolling_patient_prediction_table <- rolling_prediction_table %>%
+  group_by(.data$horizon_weeks, .data$patient_id, .data$variant_p, .data$true_pam_k3) %>%
+  summarise(
+    n_windows = n(),
+    first_window_start_date = min(.data$window_start_date),
+    last_window_end_date = max(.data$window_end_date),
+    across(all_of(probability_columns), mean),
+    .groups = "drop"
+  ) %>%
+  add_predicted_class(cluster_levels) %>%
+  arrange(.data$horizon_weeks, .data$patient_id)
+
+readr::write_csv(rolling_patient_prediction_table, ROLLING_PATIENT_PREDICTIONS_OUTPUT_PATH)
+
+rolling_patient_performance_table <- build_performance_table(rolling_patient_prediction_table)
+readr::write_csv(rolling_patient_performance_table, ROLLING_PATIENT_PERFORMANCE_OUTPUT_PATH)
+
+rolling_patient_confusion_table <- build_confusion_table(rolling_patient_prediction_table, HORIZON_WEEKS)
+readr::write_csv(rolling_patient_confusion_table, ROLLING_PATIENT_CONFUSION_OUTPUT_PATH)
+
+rolling_period_performance_table <- rolling_prediction_table %>%
+  group_by(.data$horizon_weeks, .data$period_index) %>%
+  filter(dplyr::n_distinct(.data$true_pam_k3) == length(cluster_levels)) %>%
+  group_modify(~ build_metrics(.x, cluster_levels)) %>%
+  ungroup() %>%
+  arrange(.data$horizon_weeks, .data$period_index)
+
+readr::write_csv(rolling_period_performance_table, ROLLING_PERIOD_PERFORMANCE_OUTPUT_PATH)
+
+rolling_coefficient_table <- purrr::map_dfr(
+  HORIZON_WEEKS,
+  function(horizon_weeks) {
+    horizon_data <- rolling_feature_table %>%
+      filter(.data$horizon_weeks == !!horizon_weeks) %>%
+      mutate(pam_k3 = factor(as.character(.data$pam_k3), levels = cluster_levels))
+
+    cv_fit <- fit_cv_ridge_multinomial(
+      horizon_data %>% select(all_of(MODEL_FEATURES)) %>% as.matrix(),
+      horizon_data$pam_k3
+    )
+
+    build_coefficient_table(cv_fit, horizon_weeks, MODEL_FEATURES, cluster_levels)
+  }
+)
+
+readr::write_csv(rolling_coefficient_table, ROLLING_COEFFICIENTS_OUTPUT_PATH)

@@ -9,9 +9,39 @@ source("src/analysis_config.R")
 
 PANEL_INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 SURVEY_INPUT_PATH <- "data/prospective_surveys.csv"
-OUTPUT_TAB_DIR <- "output/tabs/seizure_patterns"
-OUTPUT_PATH <- file.path(OUTPUT_TAB_DIR, "cohort_seizure_summary.csv")
+REGISTRY_INPUT_PATH <- "data/registry.csv"
+OUTPUT_TAB_DIR <- "output/tabs"
+OUTPUT_PATH <- file.path(OUTPUT_TAB_DIR, "summary_table.csv")
 DAYS_PER_MONTH <- STANDARD_MONTH_DAYS
+
+US_STATE_NAMES <- c(
+  "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+  "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+  "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
+  "maine", "maryland", "massachusetts", "michigan", "minnesota",
+  "mississippi", "missouri", "montana", "nebraska", "nevada",
+  "new hampshire", "new jersey", "new mexico", "new york",
+  "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
+  "pennsylvania", "rhode island", "south carolina", "south dakota",
+  "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+  "west virginia", "wisconsin", "wyoming", "district of columbia"
+)
+
+is_us_location <- function(location) {
+  location_clean <- stringr::str_to_lower(stringr::str_squish(as.character(location)))
+  location_clean <- dplyr::na_if(location_clean, "")
+  state_pattern <- paste0(
+    "\\b(",
+    paste(stringr::str_replace_all(US_STATE_NAMES, " ", "\\\\s+"), collapse = "|"),
+    ")\\b"
+  )
+
+  dplyr::coalesce(
+    stringr::str_detect(location_clean, "\\b(united states|usa|u\\.s\\.a\\.|u\\.s\\.|us)\\b") |
+      stringr::str_detect(location_clean, state_pattern),
+    FALSE
+  )
+}
 
 dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
 
@@ -21,6 +51,10 @@ if (!file.exists(PANEL_INPUT_PATH)) {
 
 if (!file.exists(SURVEY_INPUT_PATH)) {
   stop("Input file not found: ", SURVEY_INPUT_PATH, call. = FALSE)
+}
+
+if (!file.exists(REGISTRY_INPUT_PATH)) {
+  stop("Input file not found: ", REGISTRY_INPUT_PATH, call. = FALSE)
 }
 
 patient_month_panel <- readr::read_csv(PANEL_INPUT_PATH, show_col_types = FALSE) %>%
@@ -74,6 +108,49 @@ completed_prospective_survey_patients <- readr::read_csv(SURVEY_INPUT_PATH, show
   dplyr::distinct(.data$patient_id) %>%
   nrow()
 
+registry_raw <- readr::read_csv(REGISTRY_INPUT_PATH, show_col_types = FALSE) %>%
+  dplyr::mutate(patient_id = as.character(.data$patient_id))
+
+required_registry_columns <- c("patient_id", "sex", "age_years", "location")
+missing_registry_columns <- setdiff(required_registry_columns, names(registry_raw))
+if (length(missing_registry_columns) > 0) {
+  stop(
+    "Required registry column(s) missing from ",
+    REGISTRY_INPUT_PATH,
+    ": ",
+    paste(missing_registry_columns, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+missing_registry_patients <- setdiff(unique(patient_month_panel$patient_id), registry_raw$patient_id)
+if (length(missing_registry_patients) > 0) {
+  warning(
+    "Registry rows are missing for ",
+    length(missing_registry_patients),
+    " cohort patient(s): ",
+    paste(missing_registry_patients, collapse = ", "),
+    ". Registry summaries use available registry rows only.",
+    call. = FALSE
+  )
+}
+
+registry_summary <- registry_raw %>%
+  dplyr::filter(.data$patient_id %in% unique(patient_month_panel$patient_id)) %>%
+  dplyr::distinct(.data$patient_id, .keep_all = TRUE) %>%
+  dplyr::mutate(
+    sex_clean = stringr::str_to_lower(stringr::str_squish(as.character(.data$sex))),
+    age_years = suppressWarnings(as.numeric(.data$age_years)),
+    location_clean = stringr::str_squish(as.character(.data$location)),
+    location_clean = dplyr::na_if(.data$location_clean, ""),
+    international_patient = !is_us_location(.data$location_clean) & !is.na(.data$location_clean)
+  ) %>%
+  dplyr::summarise(
+    sex_male = as.integer(sum(.data$sex_clean == "male", na.rm = TRUE)),
+    international_patients = as.integer(sum(.data$international_patient, na.rm = TRUE)),
+    mean_age = mean(.data$age_years, na.rm = TRUE)
+  )
+
 patient_follow_up <- patient_month_panel %>%
   dplyr::group_by(.data$patient_id) %>%
   dplyr::summarise(
@@ -84,6 +161,9 @@ patient_follow_up <- patient_month_panel %>%
 summary_table <- patient_month_panel %>%
   dplyr::summarise(
     n = as.integer(dplyr::n_distinct(.data$patient_id)),
+    sex_male = registry_summary$sex_male,
+    international_patients = registry_summary$international_patients,
+    mean_age = registry_summary$mean_age,
     observed_patient_months_28d = sum(.data$observed_patient_months_28d),
     seizure_events = as.integer(sum(.data$seizure_count)),
     patients_completed_prospective_survey = as.integer(completed_prospective_survey_patients),
