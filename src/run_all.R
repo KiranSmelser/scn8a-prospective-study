@@ -104,6 +104,7 @@ pipeline_steps <- data.frame(
     "src/clustering/seizure_freq_features.R",
     "src/clustering/clustering.R",
     "src/clustering/summarize_clusters.R",
+    "src/clustering/clusters_alluvial.R",
     "src/clustering/plot_clustering.R",
     "src/modeling/prediction/cluster_pred_sz.R",
     "src/modeling/prediction/cluster_pred_registry.R",
