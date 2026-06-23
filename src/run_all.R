@@ -73,7 +73,7 @@ pipeline_steps <- data.frame(
     rep("clustering", 5),
     rep("prediction", 5),
     rep("modeling", 2),
-    "changepoints",
+    rep("changepoints", 3),
     rep("periodicity", 4),
     "episodicity",
     "timelines"
@@ -114,6 +114,8 @@ pipeline_steps <- data.frame(
     "src/modeling/modeling.R",
     "src/modeling/plot_model_coefficients.R",
     "src/changepoints/change_point_analysis.R",
+    "src/changepoints/cluster_fluctuation.R",
+    "src/changepoints/cluster_thresholds.R",
     "src/periodicity/patient_level_permutation.R",
     "src/periodicity/patient_level_periodicity.R",
     "src/periodicity/plot_patient_level_periodicity.R",
