@@ -21,6 +21,7 @@ if (file.exists("output/figs/helpilepsy_timelines.pdf")) {
 }
 current_date <- analysis_end_date()
 CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/patient_change_points.csv"
+CHANGE_POINT_SENSITIVITY_INPUT_PATH <- "output/tabs/changepoints/sensitivity/patient_change_points_penalty_1.csv"
 CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 CHANGE_POINT_REQUIRED_COLUMNS <- c(
   "patient_id",
@@ -104,6 +105,51 @@ change_point_character_column <- function(data, column_name) {
   } else {
     rep(NA_character_, nrow(data))
   }
+}
+
+empty_change_point_markers <- function() {
+  tibble(
+    patient_id = character(),
+    pre_segment_start_date = as.Date(character()),
+    change_point_date = as.Date(character()),
+    post_segment_end_date = as.Date(character()),
+    change_direction = character()
+  )
+}
+
+read_change_point_markers <- function(path, label) {
+  if (!file.exists(path)) {
+    return(empty_change_point_markers())
+  }
+
+  change_point_raw <- readr::read_csv(
+    path,
+    col_types = readr::cols(.default = readr::col_guess(), patient_id = readr::col_character())
+  )
+  missing_change_point_columns <- setdiff(CHANGE_POINT_REQUIRED_COLUMNS, names(change_point_raw))
+  if (length(missing_change_point_columns) > 0) {
+    stop(
+      label,
+      " is missing required columns: ",
+      paste(missing_change_point_columns, collapse = ", ")
+    )
+  }
+
+  change_point_raw %>%
+    transmute(
+      patient_id = as.character(patient_id),
+      change_point_date = parse_event_date(candidate_week),
+      pre_segment_start_date = change_point_date_column(change_point_raw, "pre_segment_start_date"),
+      post_segment_end_date = change_point_date_column(change_point_raw, "post_segment_end_date"),
+      change_direction = str_to_lower(str_squish(change_point_character_column(change_point_raw, "direction"))),
+      significant = parse_change_point_flag(significant)
+    ) %>%
+    filter(
+      significant,
+      !is.na(patient_id),
+      !is.na(change_point_date)
+    ) %>%
+    distinct(patient_id, change_point_date, pre_segment_start_date, post_segment_end_date, change_direction)
 }
 
 min_date_or_na <- function(x) {
@@ -241,43 +287,16 @@ pam_cluster_lookup <- cluster_assignments %>%
   filter(!is.na(patient_id), patient_id != "") %>%
   distinct(patient_id, .keep_all = TRUE)
 
-change_point_markers <- if (file.exists(CHANGE_POINT_INPUT_PATH)) {
-  change_point_raw <- readr::read_csv(
-    CHANGE_POINT_INPUT_PATH,
-    col_types = readr::cols(.default = readr::col_guess(), patient_id = readr::col_character())
-  )
-  missing_change_point_columns <- setdiff(CHANGE_POINT_REQUIRED_COLUMNS, names(change_point_raw))
-  if (length(missing_change_point_columns) > 0) {
-    stop(
-      "Change-point output is missing required columns: ",
-      paste(missing_change_point_columns, collapse = ", ")
-    )
-  }
+change_point_markers <- read_change_point_markers(CHANGE_POINT_INPUT_PATH, "Change-point output")
 
-  change_point_raw %>%
-    transmute(
-      patient_id = as.character(patient_id),
-      change_point_date = parse_event_date(candidate_week),
-      pre_segment_start_date = change_point_date_column(change_point_raw, "pre_segment_start_date"),
-      post_segment_end_date = change_point_date_column(change_point_raw, "post_segment_end_date"),
-      change_direction = str_to_lower(str_squish(change_point_character_column(change_point_raw, "direction"))),
-      significant = parse_change_point_flag(significant)
-    ) %>%
-    filter(
-      significant,
-      !is.na(patient_id),
-      !is.na(change_point_date)
-    ) %>%
-    distinct(patient_id, change_point_date, pre_segment_start_date, post_segment_end_date, change_direction)
-} else {
-  tibble(
-    patient_id = character(),
-    pre_segment_start_date = as.Date(character()),
-    change_point_date = as.Date(character()),
-    post_segment_end_date = as.Date(character()),
-    change_direction = character()
+sensitivity_change_point_markers <- read_change_point_markers(
+  CHANGE_POINT_SENSITIVITY_INPUT_PATH,
+  "Penalty-1 change-point sensitivity output"
+) %>%
+  anti_join(
+    change_point_markers %>% distinct(patient_id, change_point_date),
+    by = c("patient_id", "change_point_date")
   )
-}
 
 prospective_survey_completion <- surveys %>%
   mutate(
@@ -556,6 +575,7 @@ patients_with_data <- union(
 patients_with_data <- union(patients_with_data, unique(prospective_survey_completion$patient_id))
 patients_with_data <- union(patients_with_data, unique(app_usage_daily$patient_id))
 patients_with_data <- union(patients_with_data, unique(scn8a_diary_events$patient_id))
+patients_with_data <- union(patients_with_data, unique(sensitivity_change_point_markers$patient_id))
 patients_with_data <- patients_with_data[!is.na(patients_with_data)]
 patients_with_data <- intersect(patients_with_data, whatsapp_names$patient_id)
 
@@ -689,6 +709,16 @@ change_point_summary <- change_point_markers %>%
     .groups = "drop"
   )
 
+sensitivity_change_point_summary <- sensitivity_change_point_markers %>%
+  group_by(patient_id) %>%
+  summarise(
+    n_penalty1_only_change_points = n(),
+    sensitivity_change_point_first_date = min_date_or_na(change_point_date),
+    sensitivity_pre_segment_start_min = min_date_or_na(pre_segment_start_date),
+    sensitivity_post_segment_end_max = max_date_or_na(post_segment_end_date),
+    .groups = "drop"
+  )
+
 medications_missing_schedule <- medications_for_analysis %>%
   anti_join(med_intervals_raw %>% distinct(patient_id, medication_id), by = c("patient_id", "medication_id")) %>%
   select(
@@ -717,6 +747,7 @@ timeline_qc <- patient_order %>%
   left_join(app_usage_summary, by = "patient_id") %>%
   left_join(diary_summary, by = "patient_id") %>%
   left_join(change_point_summary, by = "patient_id") %>%
+  left_join(sensitivity_change_point_summary, by = "patient_id") %>%
   left_join(medications_missing_schedule_summary, by = "patient_id") %>%
   left_join(medication_refs_missing_metadata_summary, by = "patient_id") %>%
   mutate(
@@ -731,6 +762,7 @@ timeline_qc <- patient_order %>%
     n_diary_all_yes = replace_na(n_diary_all_yes, 0L),
     n_diary_any_no = replace_na(n_diary_any_no, 0L),
     n_significant_change_points = replace_na(n_significant_change_points, 0L),
+    n_penalty1_only_change_points = replace_na(n_penalty1_only_change_points, 0L),
     n_med_records_missing_schedule = replace_na(n_med_records_missing_schedule, 0L),
     n_med_refs_missing_metadata = replace_na(n_med_refs_missing_metadata, 0L)
   ) %>%
@@ -739,7 +771,8 @@ timeline_qc <- patient_order %>%
     timeline_start_date = {
       dates <- c(
         seizure_first_date, med_start_min, med_schedule_start_min, milestone_first_date,
-        app_usage_first_date, diary_first_date, pre_segment_start_min, change_point_first_date
+        app_usage_first_date, diary_first_date, pre_segment_start_min, change_point_first_date,
+        sensitivity_pre_segment_start_min, sensitivity_change_point_first_date
       )
       dates <- dates[!is.na(dates)]
       start_date <- if (length(dates) == 0) as.Date(NA) else min(dates)
@@ -756,7 +789,8 @@ timeline_qc <- patient_order %>%
       dates <- c(
         seizure_last_date, med_end_max, med_start_max, med_schedule_start_max,
         med_schedule_end_max, milestone_last_date, app_usage_last_date,
-        diary_last_date, change_point_first_date, post_segment_end_max
+        diary_last_date, change_point_first_date, post_segment_end_max,
+        sensitivity_change_point_first_date, sensitivity_post_segment_end_max
       )
       dates <- dates[!is.na(dates)]
       if (length(dates) == 0) as.Date(NA) else max(dates)
@@ -798,6 +832,7 @@ plot_patient_timeline <- function(pt_id) {
   pt_app_usage <- app_usage_daily %>% filter(patient_id == pt_id)
   pt_diary <- scn8a_diary_events %>% filter(patient_id == pt_id)
   pt_change_points <- change_point_markers %>% filter(patient_id == pt_id)
+  pt_sensitivity_change_points <- sensitivity_change_point_markers %>% filter(patient_id == pt_id)
   pt_min_event_date <- PATIENT_START_DATES %>% filter(patient_id == pt_id) %>%
     pull(min_event_date) %>% first()
   pt_completed_prospective <- prospective_survey_completion %>% filter(patient_id == pt_id) %>%
@@ -817,6 +852,7 @@ plot_patient_timeline <- function(pt_id) {
       nrow(pt_app_usage) == 0 &&
       nrow(pt_diary) == 0 &&
       nrow(pt_change_points) == 0 &&
+      nrow(pt_sensitivity_change_points) == 0 &&
       !show_no_skills_label &&
       !show_no_entered_skills_label
   ) {
@@ -837,7 +873,10 @@ plot_patient_timeline <- function(pt_id) {
       pt_diary$diary_date,
       pt_change_points$pre_segment_start_date,
       pt_change_points$change_point_date,
-      pt_change_points$post_segment_end_date
+      pt_change_points$post_segment_end_date,
+      pt_sensitivity_change_points$pre_segment_start_date,
+      pt_sensitivity_change_points$change_point_date,
+      pt_sensitivity_change_points$post_segment_end_date
     ),
     na.rm = TRUE
   )
@@ -845,11 +884,13 @@ plot_patient_timeline <- function(pt_id) {
     c(
       pt_meds$start_date, pt_med_schedule_start_min, pt_seizures$event_date,
       pt_milestones$start_date, pt_app_usage$usage_date, pt_diary$diary_date,
-      pt_change_points$pre_segment_start_date, pt_change_points$change_point_date
+      pt_change_points$pre_segment_start_date, pt_change_points$change_point_date,
+      pt_sensitivity_change_points$pre_segment_start_date,
+      pt_sensitivity_change_points$change_point_date
     ),
     na.rm = TRUE
   )
-  if (!is.na(pt_app_activity_date) && nrow(pt_change_points) == 0) {
+  if (!is.na(pt_app_activity_date) && nrow(pt_change_points) == 0 && nrow(pt_sensitivity_change_points) == 0) {
     earliest_date <- max(earliest_date, pt_app_activity_date, na.rm = TRUE)
   }
   if (!is.na(pt_start_floor)) {
@@ -868,6 +909,12 @@ plot_patient_timeline <- function(pt_id) {
     plot_end_date <- earliest_date
   }
   pt_change_point_markers <- pt_change_points %>%
+    transmute(
+      marker_date = change_point_date,
+      marker_direction = change_direction
+    ) %>%
+    filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
+  pt_sensitivity_change_point_markers <- pt_sensitivity_change_points %>%
     transmute(
       marker_date = change_point_date,
       marker_direction = change_direction
@@ -1027,6 +1074,10 @@ plot_patient_timeline <- function(pt_id) {
     filter(marker_direction == "increase")
   pt_decrease_change_point_markers <- pt_change_point_markers %>%
     filter(marker_direction == "decrease")
+  pt_sensitivity_increase_change_point_markers <- pt_sensitivity_change_point_markers %>%
+    filter(marker_direction == "increase")
+  pt_sensitivity_decrease_change_point_markers <- pt_sensitivity_change_point_markers %>%
+    filter(marker_direction == "decrease")
 
   if (nrow(pt_increase_change_point_markers) > 0) {
     p <- p +
@@ -1045,6 +1096,30 @@ plot_patient_timeline <- function(pt_id) {
         data = pt_decrease_change_point_markers,
         aes(xintercept = marker_date),
         color = "#2B6CB0",
+        linewidth = 0.8,
+        alpha = 0.7
+      )
+  }
+
+  if (nrow(pt_sensitivity_increase_change_point_markers) > 0) {
+    p <- p +
+      geom_vline(
+        data = pt_sensitivity_increase_change_point_markers,
+        aes(xintercept = marker_date),
+        color = "#C80813",
+        linetype = "dashed",
+        linewidth = 0.8,
+        alpha = 0.7
+      )
+  }
+
+  if (nrow(pt_sensitivity_decrease_change_point_markers) > 0) {
+    p <- p +
+      geom_vline(
+        data = pt_sensitivity_decrease_change_point_markers,
+        aes(xintercept = marker_date),
+        color = "#2B6CB0",
+        linetype = "dashed",
         linewidth = 0.8,
         alpha = 0.7
       )

@@ -1,4 +1,4 @@
-# Joint multiple-change-point analysis for patient seizure frequency.
+# Change-point analysis for patient seizure frequency.
 
 suppressPackageStartupMessages({
   library(readr)
@@ -17,6 +17,7 @@ OUTPUT_DIR <- "output/tabs/changepoints"
 CANDIDATES_OUTPUT_PATH <- file.path(OUTPUT_DIR, "change_point_candidates.csv")
 PATIENT_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_change_points.csv")
 SEGMENTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "change_point_segments.csv")
+SENSITIVITY_OUTPUT_DIR <- file.path(OUTPUT_DIR, "sensitivity")
 LEGACY_BINARY_OUTPUT_PATHS <- file.path(
   OUTPUT_DIR,
   c("binary_segmentation_change_points.csv", "binary_segmentation_segments.csv")
@@ -29,13 +30,23 @@ MIN_SEGMENT_WEEKS <- as.integer(Sys.getenv("CHANGEPOINT_MIN_SEGMENT_WEEKS", "4")
 MIN_SEGMENT_OBSERVED_DAYS <- as.integer(Sys.getenv("CHANGEPOINT_MIN_SEGMENT_OBSERVED_DAYS", "28"))
 MAX_CHANGEPOINTS <- as.integer(Sys.getenv("CHANGEPOINT_MAX_CHANGEPOINTS", "4"))
 BOOTSTRAP_REPLICATES <- as.integer(Sys.getenv("CHANGEPOINT_BOOTSTRAPS", "500"))
-SEGMENT_PENALTY_MULTIPLIER <- as.numeric(Sys.getenv("CHANGEPOINT_SEGMENT_PENALTY_MULTIPLIER", "2"))
+PRIMARY_SEGMENT_PENALTY_MULTIPLIER <- as.numeric(Sys.getenv("CHANGEPOINT_SEGMENT_PENALTY_MULTIPLIER", "2"))
+SEGMENT_PENALTY_MULTIPLIERS <- as.numeric(strsplit(
+  Sys.getenv("CHANGEPOINT_SEGMENT_PENALTY_MULTIPLIERS", "2,1"),
+  ","
+)[[1]])
+SEGMENT_PENALTY_MULTIPLIERS <- unique(c(PRIMARY_SEGMENT_PENALTY_MULTIPLIER, SEGMENT_PENALTY_MULTIPLIERS))
 POISSON_LIMIT_THETA <- as.numeric(Sys.getenv("CHANGEPOINT_POISSON_LIMIT_THETA", "1000000"))
 RANDOM_SEED <- 20260430L
 ALPHA <- 0.05
 
 dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(SENSITIVITY_OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
 invisible(file.remove(LEGACY_BINARY_OUTPUT_PATHS[file.exists(LEGACY_BINARY_OUTPUT_PATHS)]))
+
+if (any(!is.finite(SEGMENT_PENALTY_MULTIPLIERS)) || any(SEGMENT_PENALTY_MULTIPLIERS <= 0)) {
+  stop("CHANGEPOINT_SEGMENT_PENALTY_MULTIPLIERS must contain positive numeric values.", call. = FALSE)
+}
 
 if (!file.exists(PANEL_INPUT_PATH)) {
   stop("Input file not found: ", PANEL_INPUT_PATH)
@@ -303,7 +314,7 @@ build_interval_costs <- function(weekly_data, theta) {
   list(cost = cost, log_likelihood = log_likelihood)
 }
 
-select_joint_segmentation <- function(weekly_data, theta) {
+select_joint_segmentation <- function(weekly_data, theta, segment_penalty_multiplier) {
   n <- nrow(weekly_data)
   interval_costs <- build_interval_costs(weekly_data, theta)
   cost <- interval_costs$cost
@@ -324,7 +335,7 @@ select_joint_segmentation <- function(weekly_data, theta) {
   }
 
   max_segments <- min(MAX_CHANGEPOINTS + 1L, n)
-  penalty_per_segment <- SEGMENT_PENALTY_MULTIPLIER * log(n)
+  penalty_per_segment <- segment_penalty_multiplier * log(n)
   dp <- matrix(Inf, nrow = max_segments, ncol = n)
   backtrack <- matrix(NA_integer_, nrow = max_segments, ncol = n)
 
@@ -714,70 +725,118 @@ patient_summaries <- weekly_counts %>%
     .groups = "drop"
   )
 
-set.seed(RANDOM_SEED)
-
-patient_results <- weekly_counts %>%
-  dplyr::group_by(.data$patient_id) %>%
-  dplyr::group_split() %>%
-  purrr::map(function(patient_weekly_data) {
-    theta_result <- estimate_patient_theta(patient_weekly_data)
-    theta <- theta_result$theta[[1]]
-    theta_status <- theta_result$theta_status[[1]]
-    segmentation <- select_joint_segmentation(patient_weekly_data, theta)
-    patient_summary <- patient_summaries %>%
-      dplyr::filter(.data$patient_id == patient_weekly_data$patient_id[[1]])
-    segment_table <- build_segment_table(patient_weekly_data, segmentation, theta, theta_status)
-    change_point_table <- build_change_point_table(
-      weekly_data = patient_weekly_data,
-      patient_summary = patient_summary,
-      segmentation = segmentation,
-      segment_table = segment_table,
-      theta = theta,
-      theta_status = theta_status
-    )
-    candidate_table <- scan_patient_candidates(patient_weekly_data, theta) %>%
-      dplyr::mutate(
-        selected_by_joint_model = .data$candidate_week_index %in% change_point_table$candidate_week_index,
-        joint_model_n_segments = segmentation$n_segments,
-        joint_model_n_change_points = segmentation$n_change_points,
-        joint_model_status = segmentation$status,
-        penalty_per_segment = segmentation$penalty_per_segment
-      )
-
-    list(
-      candidates = candidate_table,
-      change_points = change_point_table,
-      segments = segment_table
-    )
-  })
-
-candidate_table <- patient_results %>%
-  purrr::map("candidates") %>%
-  purrr::list_rbind() %>%
-  dplyr::arrange(.data$patient_id, .data$candidate_week)
-
-patient_table <- patient_results %>%
-  purrr::map("change_points") %>%
-  purrr::list_rbind()
-
-if (any(is.finite(patient_table$bootstrap_p_value))) {
-  finite_bootstrap_p <- is.finite(patient_table$bootstrap_p_value)
-  patient_table$q_value[finite_bootstrap_p] <- stats::p.adjust(
-    patient_table$bootstrap_p_value[finite_bootstrap_p],
-    method = "BH"
-  )
-
-  patient_table <- patient_table %>%
-    dplyr::mutate(
-      significant = !is.na(.data$q_value) & .data$q_value < ALPHA
-    )
+penalty_output_label <- function(segment_penalty_multiplier) {
+  penalty_label <- format(segment_penalty_multiplier, scientific = FALSE, trim = TRUE)
+  penalty_label <- gsub("\\.", "p", penalty_label)
+  paste0("penalty_", penalty_label)
 }
 
-segment_table <- patient_results %>%
-  purrr::map("segments") %>%
-  purrr::list_rbind() %>%
-  dplyr::arrange(.data$patient_id, .data$segment_start_date, .data$segment_id)
+sensitivity_output_path <- function(file_stem, segment_penalty_multiplier) {
+  file.path(
+    SENSITIVITY_OUTPUT_DIR,
+    paste0(file_stem, "_", penalty_output_label(segment_penalty_multiplier), ".csv")
+  )
+}
 
-readr::write_csv(candidate_table, CANDIDATES_OUTPUT_PATH)
-readr::write_csv(patient_table, PATIENT_OUTPUT_PATH)
-readr::write_csv(segment_table, SEGMENTS_OUTPUT_PATH)
+run_change_point_analysis <- function(segment_penalty_multiplier) {
+  set.seed(RANDOM_SEED)
+
+  patient_results <- weekly_counts %>%
+    dplyr::group_by(.data$patient_id) %>%
+    dplyr::group_split() %>%
+    purrr::map(function(patient_weekly_data) {
+      theta_result <- estimate_patient_theta(patient_weekly_data)
+      theta <- theta_result$theta[[1]]
+      theta_status <- theta_result$theta_status[[1]]
+      segmentation <- select_joint_segmentation(
+        patient_weekly_data,
+        theta,
+        segment_penalty_multiplier
+      )
+      patient_summary <- patient_summaries %>%
+        dplyr::filter(.data$patient_id == patient_weekly_data$patient_id[[1]])
+      segment_table <- build_segment_table(patient_weekly_data, segmentation, theta, theta_status)
+      change_point_table <- build_change_point_table(
+        weekly_data = patient_weekly_data,
+        patient_summary = patient_summary,
+        segmentation = segmentation,
+        segment_table = segment_table,
+        theta = theta,
+        theta_status = theta_status
+      )
+      candidate_table <- scan_patient_candidates(patient_weekly_data, theta) %>%
+        dplyr::mutate(
+          selected_by_joint_model = .data$candidate_week_index %in% change_point_table$candidate_week_index,
+          joint_model_n_segments = segmentation$n_segments,
+          joint_model_n_change_points = segmentation$n_change_points,
+          joint_model_status = segmentation$status,
+          penalty_per_segment = segmentation$penalty_per_segment
+        )
+
+      list(
+        candidates = candidate_table,
+        change_points = change_point_table,
+        segments = segment_table
+      )
+    })
+
+  candidate_table <- patient_results %>%
+    purrr::map("candidates") %>%
+    purrr::list_rbind() %>%
+    dplyr::mutate(segment_penalty_multiplier = segment_penalty_multiplier, .before = "penalty_per_segment") %>%
+    dplyr::arrange(.data$patient_id, .data$candidate_week)
+
+  patient_table <- patient_results %>%
+    purrr::map("change_points") %>%
+    purrr::list_rbind() %>%
+    dplyr::mutate(segment_penalty_multiplier = segment_penalty_multiplier, .before = "penalty_per_segment")
+
+  if (any(is.finite(patient_table$bootstrap_p_value))) {
+    finite_bootstrap_p <- is.finite(patient_table$bootstrap_p_value)
+    patient_table$q_value[finite_bootstrap_p] <- stats::p.adjust(
+      patient_table$bootstrap_p_value[finite_bootstrap_p],
+      method = "BH"
+    )
+
+    patient_table <- patient_table %>%
+      dplyr::mutate(
+        significant = !is.na(.data$q_value) & .data$q_value < ALPHA
+      )
+  }
+
+  segment_table <- patient_results %>%
+    purrr::map("segments") %>%
+    purrr::list_rbind() %>%
+    dplyr::mutate(segment_penalty_multiplier = segment_penalty_multiplier, .before = "penalty_per_segment") %>%
+    dplyr::arrange(.data$patient_id, .data$segment_start_date, .data$segment_id)
+
+  list(
+    candidates = candidate_table,
+    change_points = patient_table,
+    segments = segment_table
+  )
+}
+
+for (segment_penalty_multiplier in SEGMENT_PENALTY_MULTIPLIERS) {
+  message("Running changepoint analysis with segment penalty multiplier: ", segment_penalty_multiplier)
+  analysis_result <- run_change_point_analysis(segment_penalty_multiplier)
+
+  if (isTRUE(all.equal(segment_penalty_multiplier, PRIMARY_SEGMENT_PENALTY_MULTIPLIER))) {
+    readr::write_csv(analysis_result$candidates, CANDIDATES_OUTPUT_PATH)
+    readr::write_csv(analysis_result$change_points, PATIENT_OUTPUT_PATH)
+    readr::write_csv(analysis_result$segments, SEGMENTS_OUTPUT_PATH)
+  } else {
+    readr::write_csv(
+      analysis_result$candidates,
+      sensitivity_output_path("change_point_candidates", segment_penalty_multiplier)
+    )
+    readr::write_csv(
+      analysis_result$change_points,
+      sensitivity_output_path("patient_change_points", segment_penalty_multiplier)
+    )
+    readr::write_csv(
+      analysis_result$segments,
+      sensitivity_output_path("change_point_segments", segment_penalty_multiplier)
+    )
+  }
+}
