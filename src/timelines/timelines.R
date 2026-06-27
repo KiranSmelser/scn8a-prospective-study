@@ -22,6 +22,8 @@ if (file.exists("output/figs/helpilepsy_timelines.pdf")) {
 current_date <- analysis_end_date()
 CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/patient_change_points.csv"
 CHANGE_POINT_SENSITIVITY_INPUT_PATH <- "output/tabs/changepoints/sensitivity/patient_change_points_penalty_1.csv"
+FOCAL_CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/focal/patient_change_points.csv"
+TONIC_CLONIC_CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/tonic_clonic/patient_change_points.csv"
 CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 CHANGE_POINT_REQUIRED_COLUMNS <- c(
   "patient_id",
@@ -297,6 +299,13 @@ sensitivity_change_point_markers <- read_change_point_markers(
     change_point_markers %>% distinct(patient_id, change_point_date),
     by = c("patient_id", "change_point_date")
   )
+
+type_specific_change_point_markers <- dplyr::bind_rows(
+  read_change_point_markers(FOCAL_CHANGE_POINT_INPUT_PATH, "Focal changepoint output") %>%
+    dplyr::mutate(change_point_type = "focal"),
+  read_change_point_markers(TONIC_CLONIC_CHANGE_POINT_INPUT_PATH, "Tonic-clonic changepoint output") %>%
+    dplyr::mutate(change_point_type = "tonic_clonic")
+)
 
 prospective_survey_completion <- surveys %>%
   mutate(
@@ -576,6 +585,7 @@ patients_with_data <- union(patients_with_data, unique(prospective_survey_comple
 patients_with_data <- union(patients_with_data, unique(app_usage_daily$patient_id))
 patients_with_data <- union(patients_with_data, unique(scn8a_diary_events$patient_id))
 patients_with_data <- union(patients_with_data, unique(sensitivity_change_point_markers$patient_id))
+patients_with_data <- union(patients_with_data, unique(type_specific_change_point_markers$patient_id))
 patients_with_data <- patients_with_data[!is.na(patients_with_data)]
 patients_with_data <- intersect(patients_with_data, whatsapp_names$patient_id)
 
@@ -833,6 +843,7 @@ plot_patient_timeline <- function(pt_id) {
   pt_diary <- scn8a_diary_events %>% filter(patient_id == pt_id)
   pt_change_points <- change_point_markers %>% filter(patient_id == pt_id)
   pt_sensitivity_change_points <- sensitivity_change_point_markers %>% filter(patient_id == pt_id)
+  pt_type_specific_change_points <- type_specific_change_point_markers %>% filter(patient_id == pt_id)
   pt_min_event_date <- PATIENT_START_DATES %>% filter(patient_id == pt_id) %>%
     pull(min_event_date) %>% first()
   pt_completed_prospective <- prospective_survey_completion %>% filter(patient_id == pt_id) %>%
@@ -853,6 +864,7 @@ plot_patient_timeline <- function(pt_id) {
       nrow(pt_diary) == 0 &&
       nrow(pt_change_points) == 0 &&
       nrow(pt_sensitivity_change_points) == 0 &&
+      nrow(pt_type_specific_change_points) == 0 &&
       !show_no_skills_label &&
       !show_no_entered_skills_label
   ) {
@@ -876,7 +888,10 @@ plot_patient_timeline <- function(pt_id) {
       pt_change_points$post_segment_end_date,
       pt_sensitivity_change_points$pre_segment_start_date,
       pt_sensitivity_change_points$change_point_date,
-      pt_sensitivity_change_points$post_segment_end_date
+      pt_sensitivity_change_points$post_segment_end_date,
+      pt_type_specific_change_points$pre_segment_start_date,
+      pt_type_specific_change_points$change_point_date,
+      pt_type_specific_change_points$post_segment_end_date
     ),
     na.rm = TRUE
   )
@@ -886,11 +901,18 @@ plot_patient_timeline <- function(pt_id) {
       pt_milestones$start_date, pt_app_usage$usage_date, pt_diary$diary_date,
       pt_change_points$pre_segment_start_date, pt_change_points$change_point_date,
       pt_sensitivity_change_points$pre_segment_start_date,
-      pt_sensitivity_change_points$change_point_date
+      pt_sensitivity_change_points$change_point_date,
+      pt_type_specific_change_points$pre_segment_start_date,
+      pt_type_specific_change_points$change_point_date
     ),
     na.rm = TRUE
   )
-  if (!is.na(pt_app_activity_date) && nrow(pt_change_points) == 0 && nrow(pt_sensitivity_change_points) == 0) {
+  if (
+    !is.na(pt_app_activity_date) &&
+      nrow(pt_change_points) == 0 &&
+      nrow(pt_sensitivity_change_points) == 0 &&
+      nrow(pt_type_specific_change_points) == 0
+  ) {
     earliest_date <- max(earliest_date, pt_app_activity_date, na.rm = TRUE)
   }
   if (!is.na(pt_start_floor)) {
@@ -918,6 +940,13 @@ plot_patient_timeline <- function(pt_id) {
     transmute(
       marker_date = change_point_date,
       marker_direction = change_direction
+    ) %>%
+    filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
+  pt_type_specific_change_point_markers <- pt_type_specific_change_points %>%
+    transmute(
+      marker_date = change_point_date,
+      marker_direction = change_direction,
+      marker_type = change_point_type
     ) %>%
     filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
 
@@ -1016,6 +1045,17 @@ plot_patient_timeline <- function(pt_id) {
     med_levels <- pt_meds %>% arrange(start_date) %>% pull(med_label) %>% unique()
     y_levels <- c(y_levels, rev(med_levels))
   }
+
+  pt_type_specific_change_point_markers <- pt_type_specific_change_point_markers %>%
+    mutate(
+      marker_y = tail(y_levels, 1)[[1]],
+      marker_shape = if_else(.data$marker_type == "focal", 16, 25),
+      marker_color = case_when(
+        .data$marker_direction == "increase" ~ "#C80813",
+        .data$marker_direction == "decrease" ~ "#2B6CB0",
+        TRUE ~ "#111827"
+      )
+    )
 
   p <- ggplot()
 
@@ -1125,6 +1165,21 @@ plot_patient_timeline <- function(pt_id) {
       )
   }
 
+  if (nrow(pt_type_specific_change_point_markers) > 0) {
+    p <- p +
+      geom_point(
+        data = pt_type_specific_change_point_markers,
+        aes(x = marker_date, y = marker_y, shape = factor(marker_shape)),
+        color = pt_type_specific_change_point_markers$marker_color,
+        fill = pt_type_specific_change_point_markers$marker_color,
+        size = 3,
+        alpha = 0.95,
+        show.legend = FALSE,
+        position = position_nudge(y = 0.47)
+      ) +
+      scale_shape_manual(values = c("16" = 16, "25" = 25), guide = "none")
+  }
+
   p +
     scale_y_discrete(limits = y_levels) +
     scale_color_manual(values = c("Ongoing" = "#709AE1", "Ended" = "#8A9197"), drop = FALSE) +
@@ -1139,6 +1194,7 @@ plot_patient_timeline <- function(pt_id) {
       limits = c(earliest_date, plot_end_date),
       expand = expansion(mult = c(0.01, 0.01))
     ) +
+    coord_cartesian(clip = "off") +
     labs(
       title = title_text,
       subtitle = subtitle_text,
@@ -1151,7 +1207,8 @@ plot_patient_timeline <- function(pt_id) {
     theme(
       plot.title = element_text(hjust = 0, face = "bold"),
       axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-      panel.grid.minor.x = element_blank()
+      panel.grid.minor.x = element_blank(),
+      plot.margin = margin(t = 10, r = 5.5, b = 5.5, l = 5.5)
     )
 }
 

@@ -14,10 +14,11 @@ source("src/analysis_config.R")
 PANEL_INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 SEIZURE_INPUT_PATH <- "output/tabs/seizures/seizures.csv"
 OUTPUT_DIR <- "output/tabs/changepoints"
-CANDIDATES_OUTPUT_PATH <- file.path(OUTPUT_DIR, "change_point_candidates.csv")
-PATIENT_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_change_points.csv")
-SEGMENTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "change_point_segments.csv")
 SENSITIVITY_OUTPUT_DIR <- file.path(OUTPUT_DIR, "sensitivity")
+SEIZURE_TYPE_ONLY_OUTPUT_DIRS <- c(
+  focal = file.path(OUTPUT_DIR, "focal"),
+  tonic_clonic = file.path(OUTPUT_DIR, "tonic_clonic")
+)
 LEGACY_BINARY_OUTPUT_PATHS <- file.path(
   OUTPUT_DIR,
   c("binary_segmentation_change_points.csv", "binary_segmentation_segments.csv")
@@ -36,12 +37,14 @@ SEGMENT_PENALTY_MULTIPLIERS <- as.numeric(strsplit(
   ","
 )[[1]])
 SEGMENT_PENALTY_MULTIPLIERS <- unique(c(PRIMARY_SEGMENT_PENALTY_MULTIPLIER, SEGMENT_PENALTY_MULTIPLIERS))
+SEIZURE_TYPE_ONLY_SEGMENT_PENALTY_MULTIPLIER <- 2
 POISSON_LIMIT_THETA <- as.numeric(Sys.getenv("CHANGEPOINT_POISSON_LIMIT_THETA", "1000000"))
 RANDOM_SEED <- 20260430L
 ALPHA <- 0.05
 
 dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
 dir.create(SENSITIVITY_OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
+purrr::walk(SEIZURE_TYPE_ONLY_OUTPUT_DIRS, ~ dir.create(.x, recursive = TRUE, showWarnings = FALSE))
 invisible(file.remove(LEGACY_BINARY_OUTPUT_PATHS[file.exists(LEGACY_BINARY_OUTPUT_PATHS)]))
 
 if (any(!is.finite(SEGMENT_PENALTY_MULTIPLIERS)) || any(SEGMENT_PENALTY_MULTIPLIERS <= 0)) {
@@ -636,6 +639,74 @@ build_change_point_table <- function(weekly_data, patient_summary, segmentation,
   })
 }
 
+build_seizure_events_by_week <- function(seizure_data, patient_windows) {
+  seizure_data %>%
+    dplyr::mutate(
+      patient_id = as.character(.data$patient_id),
+      event_date = parse_event_date(.data$date)
+    ) %>%
+    dplyr::filter(!is.na(.data$patient_id), !is.na(.data$event_date)) %>%
+    dplyr::inner_join(patient_windows, by = "patient_id") %>%
+    dplyr::filter(
+      .data$event_date >= .data$study_start_date,
+      .data$event_date <= .data$study_end_date
+    ) %>%
+    dplyr::mutate(week = as.Date(lubridate::floor_date(.data$event_date, unit = "week", week_start = 1))) %>%
+    dplyr::count(.data$patient_id, .data$week, name = "seizure_count")
+}
+
+build_analysis_inputs <- function(seizure_data, patient_windows, analysis_label) {
+  seizure_events_by_week <- build_seizure_events_by_week(seizure_data, patient_windows)
+
+  weekly_counts_all <- patient_windows %>%
+    dplyr::group_by(.data$patient_id) %>%
+    dplyr::group_split() %>%
+    purrr::map_dfr(~ build_weekly_counts(.x, seizure_events_by_week))
+
+  if (nrow(weekly_counts_all) == 0) {
+    stop("No valid patient-week rows could be built for ", analysis_label, ".", call. = FALSE)
+  }
+
+  eligible_patients <- weekly_counts_all %>%
+    dplyr::group_by(.data$patient_id) %>%
+    dplyr::summarise(total_seizure_events = sum(.data$seizure_count), .groups = "drop") %>%
+    dplyr::filter(.data$total_seizure_events >= MIN_TOTAL_SEIZURES)
+
+  if (nrow(eligible_patients) == 0) {
+    stop(
+      "No patients met the minimum seizure threshold of ",
+      MIN_TOTAL_SEIZURES,
+      " event(s) for ",
+      analysis_label,
+      ".",
+      call. = FALSE
+    )
+  }
+
+  weekly_counts <- weekly_counts_all %>%
+    dplyr::semi_join(eligible_patients, by = "patient_id") %>%
+    dplyr::arrange(.data$patient_id, .data$week)
+
+  patient_summaries <- weekly_counts %>%
+    dplyr::group_by(.data$patient_id) %>%
+    dplyr::summarise(
+      total_weeks = dplyr::n(),
+      total_observed_days = sum(.data$observed_days),
+      total_seizure_events = sum(.data$seizure_count),
+      study_start_date = min(.data$study_start_date),
+      study_end_date = max(.data$study_end_date),
+      first_observed_date = min(.data$observed_start),
+      last_observed_date = max(.data$observed_end),
+      mean_rate_per_28_days = STANDARD_MONTH_DAYS * .data$total_seizure_events / .data$total_observed_days,
+      .groups = "drop"
+    )
+
+  list(
+    weekly_counts = weekly_counts,
+    patient_summaries = patient_summaries
+  )
+}
+
 patient_month_panel <- readr::read_csv(PANEL_INPUT_PATH, show_col_types = FALSE)
 seizures <- readr::read_csv(SEIZURE_INPUT_PATH, show_col_types = FALSE)
 
@@ -675,55 +746,11 @@ if (nrow(patient_windows) == 0) {
   stop("No valid patient study windows found in input file: ", PANEL_INPUT_PATH)
 }
 
-seizure_events_by_week <- seizures %>%
-  dplyr::mutate(
-    patient_id = as.character(.data$patient_id),
-    event_date = parse_event_date(.data$date)
-  ) %>%
-  dplyr::filter(!is.na(.data$patient_id), !is.na(.data$event_date)) %>%
-  dplyr::inner_join(patient_windows, by = "patient_id") %>%
-  dplyr::filter(
-    .data$event_date >= .data$study_start_date,
-    .data$event_date <= .data$study_end_date
-  ) %>%
-  dplyr::mutate(week = as.Date(lubridate::floor_date(.data$event_date, unit = "week", week_start = 1))) %>%
-  dplyr::count(.data$patient_id, .data$week, name = "seizure_count")
-
-weekly_counts_all <- patient_windows %>%
-  dplyr::group_by(.data$patient_id) %>%
-  dplyr::group_split() %>%
-  purrr::map_dfr(~ build_weekly_counts(.x, seizure_events_by_week))
-
-if (nrow(weekly_counts_all) == 0) {
-  stop("No valid patient-week rows could be built from input file: ", PANEL_INPUT_PATH)
-}
-
-eligible_patients <- weekly_counts_all %>%
-  dplyr::group_by(.data$patient_id) %>%
-  dplyr::summarise(total_seizure_events = sum(.data$seizure_count), .groups = "drop") %>%
-  dplyr::filter(.data$total_seizure_events >= MIN_TOTAL_SEIZURES)
-
-if (nrow(eligible_patients) == 0) {
-  stop("No patients met the minimum seizure threshold of ", MIN_TOTAL_SEIZURES, " event(s).")
-}
-
-weekly_counts <- weekly_counts_all %>%
-  dplyr::semi_join(eligible_patients, by = "patient_id") %>%
-  dplyr::arrange(.data$patient_id, .data$week)
-
-patient_summaries <- weekly_counts %>%
-  dplyr::group_by(.data$patient_id) %>%
-  dplyr::summarise(
-    total_weeks = dplyr::n(),
-    total_observed_days = sum(.data$observed_days),
-    total_seizure_events = sum(.data$seizure_count),
-    study_start_date = min(.data$study_start_date),
-    study_end_date = max(.data$study_end_date),
-    first_observed_date = min(.data$observed_start),
-    last_observed_date = max(.data$observed_end),
-    mean_rate_per_28_days = STANDARD_MONTH_DAYS * .data$total_seizure_events / .data$total_observed_days,
-    .groups = "drop"
-  )
+primary_analysis_inputs <- build_analysis_inputs(
+  seizure_data = seizures,
+  patient_windows = patient_windows,
+  analysis_label = "all seizure types"
+)
 
 penalty_output_label <- function(segment_penalty_multiplier) {
   penalty_label <- format(segment_penalty_multiplier, scientific = FALSE, trim = TRUE)
@@ -731,15 +758,10 @@ penalty_output_label <- function(segment_penalty_multiplier) {
   paste0("penalty_", penalty_label)
 }
 
-sensitivity_output_path <- function(file_stem, segment_penalty_multiplier) {
-  file.path(
-    SENSITIVITY_OUTPUT_DIR,
-    paste0(file_stem, "_", penalty_output_label(segment_penalty_multiplier), ".csv")
-  )
-}
-
-run_change_point_analysis <- function(segment_penalty_multiplier) {
+run_change_point_analysis <- function(analysis_inputs, segment_penalty_multiplier) {
   set.seed(RANDOM_SEED)
+  weekly_counts <- analysis_inputs$weekly_counts
+  patient_summaries <- analysis_inputs$patient_summaries
 
   patient_results <- weekly_counts %>%
     dplyr::group_by(.data$patient_id) %>%
@@ -817,26 +839,61 @@ run_change_point_analysis <- function(segment_penalty_multiplier) {
   )
 }
 
+write_analysis_outputs <- function(analysis_result, output_dir, include_penalty_label = FALSE, segment_penalty_multiplier = NULL) {
+  output_path <- function(file_stem) {
+    file_name <- if (isTRUE(include_penalty_label)) {
+      paste0(file_stem, "_", penalty_output_label(segment_penalty_multiplier), ".csv")
+    } else {
+      paste0(file_stem, ".csv")
+    }
+    file.path(output_dir, file_name)
+  }
+
+  readr::write_csv(analysis_result$candidates, output_path("change_point_candidates"))
+  readr::write_csv(analysis_result$change_points, output_path("patient_change_points"))
+  readr::write_csv(analysis_result$segments, output_path("change_point_segments"))
+}
+
 for (segment_penalty_multiplier in SEGMENT_PENALTY_MULTIPLIERS) {
   message("Running changepoint analysis with segment penalty multiplier: ", segment_penalty_multiplier)
-  analysis_result <- run_change_point_analysis(segment_penalty_multiplier)
+  analysis_result <- run_change_point_analysis(primary_analysis_inputs, segment_penalty_multiplier)
 
   if (isTRUE(all.equal(segment_penalty_multiplier, PRIMARY_SEGMENT_PENALTY_MULTIPLIER))) {
-    readr::write_csv(analysis_result$candidates, CANDIDATES_OUTPUT_PATH)
-    readr::write_csv(analysis_result$change_points, PATIENT_OUTPUT_PATH)
-    readr::write_csv(analysis_result$segments, SEGMENTS_OUTPUT_PATH)
+    write_analysis_outputs(analysis_result, OUTPUT_DIR)
   } else {
-    readr::write_csv(
-      analysis_result$candidates,
-      sensitivity_output_path("change_point_candidates", segment_penalty_multiplier)
-    )
-    readr::write_csv(
-      analysis_result$change_points,
-      sensitivity_output_path("patient_change_points", segment_penalty_multiplier)
-    )
-    readr::write_csv(
-      analysis_result$segments,
-      sensitivity_output_path("change_point_segments", segment_penalty_multiplier)
+    write_analysis_outputs(
+      analysis_result,
+      SENSITIVITY_OUTPUT_DIR,
+      include_penalty_label = TRUE,
+      segment_penalty_multiplier = segment_penalty_multiplier
     )
   }
 }
+
+seizure_type_only_analyses <- tibble::tribble(
+  ~analysis_label, ~seizure_type, ~output_dir,
+  "focal-only seizure types", "Focal", unname(SEIZURE_TYPE_ONLY_OUTPUT_DIRS[["focal"]]),
+  "tonic-clonic-only seizure types", "Tonic-clonic", unname(SEIZURE_TYPE_ONLY_OUTPUT_DIRS[["tonic_clonic"]])
+)
+
+purrr::pwalk(seizure_type_only_analyses, function(analysis_label, seizure_type, output_dir) {
+  message(
+    "Running ",
+    analysis_label,
+    " changepoint analysis with segment penalty multiplier: ",
+    SEIZURE_TYPE_ONLY_SEGMENT_PENALTY_MULTIPLIER
+  )
+  type_specific_inputs <- build_analysis_inputs(
+    seizure_data = seizures %>% dplyr::filter(.data$type == seizure_type),
+    patient_windows = patient_windows,
+    analysis_label = analysis_label
+  )
+  analysis_result <- run_change_point_analysis(
+    type_specific_inputs,
+    SEIZURE_TYPE_ONLY_SEGMENT_PENALTY_MULTIPLIER
+  )
+  write_analysis_outputs(
+    analysis_result,
+    output_dir
+  )
+})
