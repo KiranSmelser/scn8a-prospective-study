@@ -24,11 +24,21 @@ CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/patient_change_points.csv"
 CHANGE_POINT_SENSITIVITY_INPUT_PATH <- "output/tabs/changepoints/sensitivity/patient_change_points_penalty_1.csv"
 FOCAL_CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/focal/patient_change_points.csv"
 TONIC_CLONIC_CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/tonic_clonic/patient_change_points.csv"
+THREE_MONTH_CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/change_point_three_month_windows.csv"
+THREE_MONTH_CHANGE_POINT_SENSITIVITY_INPUT_PATH <- "output/tabs/changepoints/sensitivity/change_point_three_month_windows_penalty_1.csv"
+FOCAL_THREE_MONTH_CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/focal/change_point_three_month_windows.csv"
+TONIC_CLONIC_THREE_MONTH_CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/tonic_clonic/change_point_three_month_windows.csv"
 CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
+THREE_MONTH_CHANGE_POINT_LINE_OFFSET_DAYS <- 2L
 CHANGE_POINT_REQUIRED_COLUMNS <- c(
   "patient_id",
   "candidate_week",
   "significant"
+)
+THREE_MONTH_CHANGE_POINT_REQUIRED_COLUMNS <- c(
+  CHANGE_POINT_REQUIRED_COLUMNS,
+  "fixed_window_status",
+  "direction"
 )
 CLUSTER_ASSIGNMENT_REQUIRED_COLUMNS <- c("patient_id", "pam_k3")
 
@@ -148,6 +158,44 @@ read_change_point_markers <- function(path, label) {
     ) %>%
     filter(
       significant,
+      !is.na(patient_id),
+      !is.na(change_point_date)
+    ) %>%
+    distinct(patient_id, change_point_date, pre_segment_start_date, post_segment_end_date, change_direction)
+}
+
+read_three_month_change_point_markers <- function(path, label) {
+  if (!file.exists(path)) {
+    return(empty_change_point_markers())
+  }
+
+  change_point_raw <- readr::read_csv(
+    path,
+    col_types = readr::cols(.default = readr::col_guess(), patient_id = readr::col_character())
+  )
+  missing_change_point_columns <- setdiff(THREE_MONTH_CHANGE_POINT_REQUIRED_COLUMNS, names(change_point_raw))
+  if (length(missing_change_point_columns) > 0) {
+    stop(
+      label,
+      " is missing required columns: ",
+      paste(missing_change_point_columns, collapse = ", ")
+    )
+  }
+
+  change_point_raw %>%
+    transmute(
+      patient_id = as.character(patient_id),
+      change_point_date = parse_event_date(candidate_week),
+      pre_segment_start_date = change_point_date_column(change_point_raw, "pre_window_start_date"),
+      post_segment_end_date = change_point_date_column(change_point_raw, "post_window_end_date"),
+      change_direction = str_to_lower(str_squish(change_point_character_column(change_point_raw, "direction"))),
+      fixed_window_status = str_to_lower(str_squish(change_point_character_column(change_point_raw, "fixed_window_status"))),
+      significant = parse_change_point_flag(significant)
+    ) %>%
+    filter(
+      significant,
+      fixed_window_status == "ok",
+      change_direction %in% c("increase", "decrease"),
       !is.na(patient_id),
       !is.na(change_point_date)
     ) %>%
@@ -306,6 +354,48 @@ type_specific_change_point_markers <- dplyr::bind_rows(
   read_change_point_markers(TONIC_CLONIC_CHANGE_POINT_INPUT_PATH, "Tonic-clonic changepoint output") %>%
     dplyr::mutate(change_point_type = "tonic_clonic")
 )
+
+three_month_change_point_markers_by_source <- dplyr::bind_rows(
+  read_three_month_change_point_markers(
+    THREE_MONTH_CHANGE_POINT_INPUT_PATH,
+    "Three-month conservative changepoint output"
+  ) %>%
+    dplyr::mutate(change_point_source = "conservative"),
+  read_three_month_change_point_markers(
+    THREE_MONTH_CHANGE_POINT_SENSITIVITY_INPUT_PATH,
+    "Three-month penalty-1 changepoint sensitivity output"
+  ) %>%
+    dplyr::mutate(change_point_source = "penalty_1"),
+  read_three_month_change_point_markers(
+    FOCAL_THREE_MONTH_CHANGE_POINT_INPUT_PATH,
+    "Three-month focal changepoint output"
+  ) %>%
+    dplyr::mutate(change_point_source = "focal"),
+  read_three_month_change_point_markers(
+    TONIC_CLONIC_THREE_MONTH_CHANGE_POINT_INPUT_PATH,
+    "Three-month tonic-clonic changepoint output"
+  ) %>%
+    dplyr::mutate(change_point_source = "tonic_clonic")
+)
+
+three_month_change_point_markers <- three_month_change_point_markers_by_source %>%
+  group_by(patient_id, change_point_date) %>%
+  summarise(
+    pre_segment_start_date = min_date_or_na(pre_segment_start_date),
+    post_segment_end_date = max_date_or_na(post_segment_end_date),
+    change_direction = {
+      observed_directions <- unique(change_direction[!is.na(change_direction) & change_direction != ""])
+      if (length(observed_directions) == 1) {
+        observed_directions[[1]]
+      } else if (length(observed_directions) > 1) {
+        "mixed"
+      } else {
+        NA_character_
+      }
+    },
+    change_point_sources = paste(sort(unique(change_point_source)), collapse = ";"),
+    .groups = "drop"
+  )
 
 prospective_survey_completion <- surveys %>%
   mutate(
@@ -586,6 +676,7 @@ patients_with_data <- union(patients_with_data, unique(app_usage_daily$patient_i
 patients_with_data <- union(patients_with_data, unique(scn8a_diary_events$patient_id))
 patients_with_data <- union(patients_with_data, unique(sensitivity_change_point_markers$patient_id))
 patients_with_data <- union(patients_with_data, unique(type_specific_change_point_markers$patient_id))
+patients_with_data <- union(patients_with_data, unique(three_month_change_point_markers$patient_id))
 patients_with_data <- patients_with_data[!is.na(patients_with_data)]
 patients_with_data <- intersect(patients_with_data, whatsapp_names$patient_id)
 
@@ -729,6 +820,16 @@ sensitivity_change_point_summary <- sensitivity_change_point_markers %>%
     .groups = "drop"
   )
 
+three_month_change_point_summary <- three_month_change_point_markers %>%
+  group_by(patient_id) %>%
+  summarise(
+    n_three_month_change_points = n(),
+    three_month_change_point_first_date = min_date_or_na(change_point_date),
+    three_month_pre_segment_start_min = min_date_or_na(pre_segment_start_date),
+    three_month_post_segment_end_max = max_date_or_na(post_segment_end_date),
+    .groups = "drop"
+  )
+
 medications_missing_schedule <- medications_for_analysis %>%
   anti_join(med_intervals_raw %>% distinct(patient_id, medication_id), by = c("patient_id", "medication_id")) %>%
   select(
@@ -758,6 +859,7 @@ timeline_qc <- patient_order %>%
   left_join(diary_summary, by = "patient_id") %>%
   left_join(change_point_summary, by = "patient_id") %>%
   left_join(sensitivity_change_point_summary, by = "patient_id") %>%
+  left_join(three_month_change_point_summary, by = "patient_id") %>%
   left_join(medications_missing_schedule_summary, by = "patient_id") %>%
   left_join(medication_refs_missing_metadata_summary, by = "patient_id") %>%
   mutate(
@@ -773,6 +875,7 @@ timeline_qc <- patient_order %>%
     n_diary_any_no = replace_na(n_diary_any_no, 0L),
     n_significant_change_points = replace_na(n_significant_change_points, 0L),
     n_penalty1_only_change_points = replace_na(n_penalty1_only_change_points, 0L),
+    n_three_month_change_points = replace_na(n_three_month_change_points, 0L),
     n_med_records_missing_schedule = replace_na(n_med_records_missing_schedule, 0L),
     n_med_refs_missing_metadata = replace_na(n_med_refs_missing_metadata, 0L)
   ) %>%
@@ -782,7 +885,8 @@ timeline_qc <- patient_order %>%
       dates <- c(
         seizure_first_date, med_start_min, med_schedule_start_min, milestone_first_date,
         app_usage_first_date, diary_first_date, pre_segment_start_min, change_point_first_date,
-        sensitivity_pre_segment_start_min, sensitivity_change_point_first_date
+        sensitivity_pre_segment_start_min, sensitivity_change_point_first_date,
+        three_month_pre_segment_start_min, three_month_change_point_first_date
       )
       dates <- dates[!is.na(dates)]
       start_date <- if (length(dates) == 0) as.Date(NA) else min(dates)
@@ -800,7 +904,8 @@ timeline_qc <- patient_order %>%
         seizure_last_date, med_end_max, med_start_max, med_schedule_start_max,
         med_schedule_end_max, milestone_last_date, app_usage_last_date,
         diary_last_date, change_point_first_date, post_segment_end_max,
-        sensitivity_change_point_first_date, sensitivity_post_segment_end_max
+        sensitivity_change_point_first_date, sensitivity_post_segment_end_max,
+        three_month_change_point_first_date, three_month_post_segment_end_max
       )
       dates <- dates[!is.na(dates)]
       if (length(dates) == 0) as.Date(NA) else max(dates)
@@ -844,6 +949,9 @@ plot_patient_timeline <- function(pt_id) {
   pt_change_points <- change_point_markers %>% filter(patient_id == pt_id)
   pt_sensitivity_change_points <- sensitivity_change_point_markers %>% filter(patient_id == pt_id)
   pt_type_specific_change_points <- type_specific_change_point_markers %>% filter(patient_id == pt_id)
+  pt_three_month_change_points <- three_month_change_point_markers %>% filter(patient_id == pt_id)
+  pt_three_month_type_specific_change_points <- three_month_change_point_markers_by_source %>%
+    filter(patient_id == pt_id, change_point_source %in% c("focal", "tonic_clonic"))
   pt_min_event_date <- PATIENT_START_DATES %>% filter(patient_id == pt_id) %>%
     pull(min_event_date) %>% first()
   pt_completed_prospective <- prospective_survey_completion %>% filter(patient_id == pt_id) %>%
@@ -865,6 +973,7 @@ plot_patient_timeline <- function(pt_id) {
       nrow(pt_change_points) == 0 &&
       nrow(pt_sensitivity_change_points) == 0 &&
       nrow(pt_type_specific_change_points) == 0 &&
+      nrow(pt_three_month_change_points) == 0 &&
       !show_no_skills_label &&
       !show_no_entered_skills_label
   ) {
@@ -891,7 +1000,10 @@ plot_patient_timeline <- function(pt_id) {
       pt_sensitivity_change_points$post_segment_end_date,
       pt_type_specific_change_points$pre_segment_start_date,
       pt_type_specific_change_points$change_point_date,
-      pt_type_specific_change_points$post_segment_end_date
+      pt_type_specific_change_points$post_segment_end_date,
+      pt_three_month_change_points$pre_segment_start_date,
+      pt_three_month_change_points$change_point_date,
+      pt_three_month_change_points$post_segment_end_date
     ),
     na.rm = TRUE
   )
@@ -903,7 +1015,9 @@ plot_patient_timeline <- function(pt_id) {
       pt_sensitivity_change_points$pre_segment_start_date,
       pt_sensitivity_change_points$change_point_date,
       pt_type_specific_change_points$pre_segment_start_date,
-      pt_type_specific_change_points$change_point_date
+      pt_type_specific_change_points$change_point_date,
+      pt_three_month_change_points$pre_segment_start_date,
+      pt_three_month_change_points$change_point_date
     ),
     na.rm = TRUE
   )
@@ -911,7 +1025,8 @@ plot_patient_timeline <- function(pt_id) {
     !is.na(pt_app_activity_date) &&
       nrow(pt_change_points) == 0 &&
       nrow(pt_sensitivity_change_points) == 0 &&
-      nrow(pt_type_specific_change_points) == 0
+      nrow(pt_type_specific_change_points) == 0 &&
+      nrow(pt_three_month_change_points) == 0
   ) {
     earliest_date <- max(earliest_date, pt_app_activity_date, na.rm = TRUE)
   }
@@ -947,6 +1062,20 @@ plot_patient_timeline <- function(pt_id) {
       marker_date = change_point_date,
       marker_direction = change_direction,
       marker_type = change_point_type
+    ) %>%
+    filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
+  pt_three_month_change_point_markers <- pt_three_month_change_points %>%
+    transmute(
+      marker_date = change_point_date,
+      marker_direction = change_direction,
+      marker_sources = change_point_sources
+    ) %>%
+    filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
+  pt_three_month_type_specific_change_point_markers <- pt_three_month_type_specific_change_points %>%
+    transmute(
+      marker_date = change_point_date,
+      marker_direction = change_direction,
+      marker_type = change_point_source
     ) %>%
     filter(!is.na(marker_date), marker_date >= earliest_date, marker_date <= plot_end_date)
 
@@ -1057,6 +1186,60 @@ plot_patient_timeline <- function(pt_id) {
       )
     )
 
+  pt_three_month_change_point_line_marker_pairs <- pt_three_month_change_point_markers %>%
+    mutate(
+      left_marker_date = pmax(marker_date - THREE_MONTH_CHANGE_POINT_LINE_OFFSET_DAYS, earliest_date),
+      right_marker_date = pmin(marker_date + THREE_MONTH_CHANGE_POINT_LINE_OFFSET_DAYS, plot_end_date),
+      left_marker_color = case_when(
+        .data$marker_direction == "increase" ~ "#C80813",
+        .data$marker_direction == "decrease" ~ "#2B6CB0",
+        .data$marker_direction == "mixed" ~ "#2B6CB0",
+        TRUE ~ "#2B6CB0"
+      ),
+      right_marker_color = case_when(
+        .data$marker_direction == "increase" ~ "#C80813",
+        .data$marker_direction == "decrease" ~ "#2B6CB0",
+        .data$marker_direction == "mixed" ~ "#C80813",
+        TRUE ~ "#C80813"
+      ),
+      marker_linetype = case_when(
+        str_detect(.data$marker_sources, "(^|;)penalty_1($|;)") &
+          !str_detect(.data$marker_sources, "(^|;)conservative($|;)") ~ "dashed",
+        TRUE ~ "solid"
+      )
+    )
+  pt_three_month_change_point_line_markers <- bind_rows(
+    pt_three_month_change_point_line_marker_pairs %>%
+      transmute(
+        marker_date = left_marker_date,
+        marker_color = left_marker_color,
+        marker_linetype = marker_linetype
+      ),
+    pt_three_month_change_point_line_marker_pairs %>%
+      transmute(
+        marker_date = right_marker_date,
+        marker_color = right_marker_color,
+        marker_linetype = marker_linetype
+      )
+  )
+
+  if (length(y_levels) > 0) {
+    pt_three_month_type_specific_change_point_markers <- pt_three_month_type_specific_change_point_markers %>%
+      anti_join(
+        pt_type_specific_change_point_markers %>% distinct(marker_date),
+        by = "marker_date"
+      ) %>%
+      distinct(marker_date, marker_type, .keep_all = TRUE) %>%
+      mutate(
+        marker_y = tail(y_levels, 1)[[1]],
+        marker_color = case_when(
+          .data$marker_direction == "increase" ~ "#C80813",
+          .data$marker_direction == "decrease" ~ "#2B6CB0",
+          TRUE ~ "#111827"
+        )
+      )
+  }
+
   p <- ggplot()
 
   if (nrow(pt_meds) > 0) {
@@ -1165,6 +1348,18 @@ plot_patient_timeline <- function(pt_id) {
       )
   }
 
+  if (nrow(pt_three_month_change_point_line_markers) > 0) {
+    p <- p +
+      geom_vline(
+        data = pt_three_month_change_point_line_markers,
+        aes(xintercept = marker_date),
+        color = pt_three_month_change_point_line_markers$marker_color,
+        linetype = pt_three_month_change_point_line_markers$marker_linetype,
+        linewidth = 0.8,
+        alpha = 0.7
+      )
+  }
+
   if (nrow(pt_type_specific_change_point_markers) > 0) {
     p <- p +
       geom_point(
@@ -1178,6 +1373,43 @@ plot_patient_timeline <- function(pt_id) {
         position = position_nudge(y = 0.47)
       ) +
       scale_shape_manual(values = c("16" = 16, "25" = 25), guide = "none")
+  }
+
+  pt_three_month_focal_change_point_markers <- pt_three_month_type_specific_change_point_markers %>%
+    filter(marker_type == "focal")
+  pt_three_month_tonic_clonic_change_point_markers <- pt_three_month_type_specific_change_point_markers %>%
+    filter(marker_type == "tonic_clonic")
+
+  if (length(y_levels) > 0 && nrow(pt_three_month_focal_change_point_markers) > 0) {
+    p <- p +
+      geom_point(
+        data = pt_three_month_focal_change_point_markers,
+        aes(x = marker_date, y = marker_y),
+        color = pt_three_month_focal_change_point_markers$marker_color,
+        fill = "white",
+        shape = 21,
+        stroke = 1,
+        size = 3,
+        alpha = 0.95,
+        show.legend = FALSE,
+        position = position_nudge(y = 0.47)
+      )
+  }
+
+  if (length(y_levels) > 0 && nrow(pt_three_month_tonic_clonic_change_point_markers) > 0) {
+    p <- p +
+      geom_point(
+        data = pt_three_month_tonic_clonic_change_point_markers,
+        aes(x = marker_date, y = marker_y),
+        color = pt_three_month_tonic_clonic_change_point_markers$marker_color,
+        fill = "white",
+        shape = 25,
+        stroke = 1,
+        size = 3,
+        alpha = 0.95,
+        show.legend = FALSE,
+        position = position_nudge(y = 0.47)
+      )
   }
 
   p +

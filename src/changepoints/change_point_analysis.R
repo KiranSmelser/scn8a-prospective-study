@@ -41,6 +41,7 @@ SEIZURE_TYPE_ONLY_SEGMENT_PENALTY_MULTIPLIER <- 2
 POISSON_LIMIT_THETA <- as.numeric(Sys.getenv("CHANGEPOINT_POISSON_LIMIT_THETA", "1000000"))
 RANDOM_SEED <- 20260430L
 ALPHA <- 0.05
+FIXED_WINDOW_MONTHS <- 3L
 
 dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
 dir.create(SENSITIVITY_OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
@@ -152,6 +153,27 @@ rate_change_direction <- function(pre_rate, post_rate) {
     post_rate > pre_rate ~ "increase",
     post_rate < pre_rate ~ "decrease",
     TRUE ~ "no_change"
+  )
+}
+
+summarise_date_window <- function(seizure_events, patient_id_value, window_start_date, window_end_date) {
+  window_events <- seizure_events %>%
+    dplyr::filter(
+      .data$patient_id == patient_id_value,
+      .data$event_date >= window_start_date,
+      .data$event_date <= window_end_date
+    )
+  observed_days <- as.integer(window_end_date - window_start_date + 1L)
+  seizure_count <- nrow(window_events)
+
+  tibble::tibble(
+    observed_days = observed_days,
+    seizure_count = seizure_count,
+    rate_per_28_days = ifelse(
+      observed_days > 0,
+      STANDARD_MONTH_DAYS * seizure_count / observed_days,
+      NA_real_
+    )
   )
 }
 
@@ -639,6 +661,95 @@ build_change_point_table <- function(weekly_data, patient_summary, segmentation,
   })
 }
 
+empty_fixed_window_table <- function() {
+  tibble::tibble(
+    patient_id = character(),
+    segment_penalty_multiplier = numeric(),
+    candidate_week = as.Date(character()),
+    candidate_week_index = integer(),
+    significant = logical(),
+    window_months = integer(),
+    pre_window_start_date = as.Date(character()),
+    pre_window_end_date = as.Date(character()),
+    post_window_start_date = as.Date(character()),
+    post_window_end_date = as.Date(character()),
+    pre_observed_days = integer(),
+    post_observed_days = integer(),
+    pre_seizure_count = integer(),
+    post_seizure_count = integer(),
+    pre_rate_per_28_days = numeric(),
+    post_rate_per_28_days = numeric(),
+    rate_ratio_post_vs_pre = numeric(),
+    direction = character(),
+    fixed_window_status = character()
+  )
+}
+
+build_fixed_window_table <- function(change_point_table, seizure_events, window_months = FIXED_WINDOW_MONTHS) {
+  selected_change_points <- change_point_table %>%
+    dplyr::filter(!is.na(.data$candidate_week)) %>%
+    dplyr::mutate(
+      fixed_pre_window_start_date = as.Date(.data$candidate_week) %m-% months(window_months),
+      fixed_post_window_end_date = (as.Date(.data$candidate_week) %m+% months(window_months)) - 1L
+    ) %>%
+    dplyr::filter(
+      .data$fixed_pre_window_start_date >= .data$study_start_date,
+      .data$fixed_post_window_end_date <= .data$study_end_date
+    ) %>%
+    dplyr::select(-"fixed_pre_window_start_date", -"fixed_post_window_end_date")
+
+  if (nrow(selected_change_points) == 0) {
+    return(empty_fixed_window_table())
+  }
+
+  purrr::pmap_dfr(selected_change_points, function(...) {
+    change_point <- tibble::tibble(...)
+    patient_id_value <- change_point$patient_id[[1]]
+    change_point_date <- as.Date(change_point$candidate_week[[1]])
+    pre_window_start_date <- change_point_date %m-% months(window_months)
+    pre_window_end_date <- change_point_date - 1L
+    post_window_start_date <- change_point_date
+    post_window_end_date <- (change_point_date %m+% months(window_months)) - 1L
+    pre_summary <- summarise_date_window(
+      seizure_events,
+      patient_id_value,
+      pre_window_start_date,
+      pre_window_end_date
+    )
+    post_summary <- summarise_date_window(
+      seizure_events,
+      patient_id_value,
+      post_window_start_date,
+      post_window_end_date
+    )
+    pre_rate <- pre_summary$rate_per_28_days[[1]]
+    post_rate <- post_summary$rate_per_28_days[[1]]
+
+    tibble::tibble(
+      patient_id = patient_id_value,
+      segment_penalty_multiplier = change_point$segment_penalty_multiplier[[1]],
+      candidate_week = change_point_date,
+      candidate_week_index = change_point$candidate_week_index[[1]],
+      significant = change_point$significant[[1]],
+      window_months = window_months,
+      pre_window_start_date = pre_window_start_date,
+      pre_window_end_date = pre_window_end_date,
+      post_window_start_date = post_window_start_date,
+      post_window_end_date = post_window_end_date,
+      pre_observed_days = pre_summary$observed_days[[1]],
+      post_observed_days = post_summary$observed_days[[1]],
+      pre_seizure_count = pre_summary$seizure_count[[1]],
+      post_seizure_count = post_summary$seizure_count[[1]],
+      pre_rate_per_28_days = pre_rate,
+      post_rate_per_28_days = post_rate,
+      rate_ratio_post_vs_pre = rate_ratio_post_vs_pre(pre_rate, post_rate),
+      direction = rate_change_direction(pre_rate, post_rate),
+      fixed_window_status = "ok"
+    )
+  }) %>%
+    dplyr::arrange(.data$patient_id, .data$candidate_week)
+}
+
 build_seizure_events_by_week <- function(seizure_data, patient_windows) {
   seizure_data %>%
     dplyr::mutate(
@@ -655,7 +766,23 @@ build_seizure_events_by_week <- function(seizure_data, patient_windows) {
     dplyr::count(.data$patient_id, .data$week, name = "seizure_count")
 }
 
+build_seizure_events <- function(seizure_data, patient_windows) {
+  seizure_data %>%
+    dplyr::mutate(
+      patient_id = as.character(.data$patient_id),
+      event_date = parse_event_date(.data$date)
+    ) %>%
+    dplyr::filter(!is.na(.data$patient_id), !is.na(.data$event_date)) %>%
+    dplyr::inner_join(patient_windows, by = "patient_id") %>%
+    dplyr::filter(
+      .data$event_date >= .data$study_start_date,
+      .data$event_date <= .data$study_end_date
+    ) %>%
+    dplyr::select("patient_id", "event_date")
+}
+
 build_analysis_inputs <- function(seizure_data, patient_windows, analysis_label) {
+  seizure_events <- build_seizure_events(seizure_data, patient_windows)
   seizure_events_by_week <- build_seizure_events_by_week(seizure_data, patient_windows)
 
   weekly_counts_all <- patient_windows %>%
@@ -703,7 +830,8 @@ build_analysis_inputs <- function(seizure_data, patient_windows, analysis_label)
 
   list(
     weekly_counts = weekly_counts,
-    patient_summaries = patient_summaries
+    patient_summaries = patient_summaries,
+    seizure_events = seizure_events
   )
 }
 
@@ -762,6 +890,7 @@ run_change_point_analysis <- function(analysis_inputs, segment_penalty_multiplie
   set.seed(RANDOM_SEED)
   weekly_counts <- analysis_inputs$weekly_counts
   patient_summaries <- analysis_inputs$patient_summaries
+  seizure_events <- analysis_inputs$seizure_events
 
   patient_results <- weekly_counts %>%
     dplyr::group_by(.data$patient_id) %>%
@@ -832,10 +961,16 @@ run_change_point_analysis <- function(analysis_inputs, segment_penalty_multiplie
     dplyr::mutate(segment_penalty_multiplier = segment_penalty_multiplier, .before = "penalty_per_segment") %>%
     dplyr::arrange(.data$patient_id, .data$segment_start_date, .data$segment_id)
 
+  fixed_window_table <- build_fixed_window_table(
+    change_point_table = patient_table,
+    seizure_events = seizure_events
+  )
+
   list(
     candidates = candidate_table,
     change_points = patient_table,
-    segments = segment_table
+    segments = segment_table,
+    fixed_windows = fixed_window_table
   )
 }
 
@@ -852,6 +987,7 @@ write_analysis_outputs <- function(analysis_result, output_dir, include_penalty_
   readr::write_csv(analysis_result$candidates, output_path("change_point_candidates"))
   readr::write_csv(analysis_result$change_points, output_path("patient_change_points"))
   readr::write_csv(analysis_result$segments, output_path("change_point_segments"))
+  readr::write_csv(analysis_result$fixed_windows, output_path("change_point_three_month_windows"))
 }
 
 for (segment_penalty_multiplier in SEGMENT_PENALTY_MULTIPLIERS) {
