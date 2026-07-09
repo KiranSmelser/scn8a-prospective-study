@@ -72,6 +72,7 @@ pipeline_steps <- data.frame(
     "cohort seizure summary",
     rep("clustering", 5),
     rep("prediction", 5),
+    "development",
     rep("modeling", 2),
     rep("changepoints", 3),
     rep("periodicity", 4),
