@@ -53,7 +53,11 @@ cohort_events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   dplyr::mutate(patient_id = as.character(.data$patient_id)) %>%
   dplyr::filter(.data$patient_id %in% TARGET_PATIENT_IDS) %>%
   dplyr::left_join(PATIENT_START_DATES, by = "patient_id") %>%
-  dplyr::filter(is.na(.data$min_event_date) | (!is.na(.data$event_date) & .data$event_date >= .data$min_event_date)) %>%
+  dplyr::filter(
+    !is.na(.data$event_date),
+    .data$event_date <= ANALYSIS_CUTOFF_DATE,
+    is.na(.data$min_event_date) | .data$event_date >= .data$min_event_date
+  ) %>%
   dplyr::left_join(patient_metadata, by = "patient_id") %>%
   dplyr::arrange(.data$patient_id, .data$event_date, .data$date, .data$event_id) %>%
   dplyr::transmute(

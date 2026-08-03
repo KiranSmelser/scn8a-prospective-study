@@ -10,6 +10,8 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
+source("src/analysis_config.R")
+
 REGISTRY_INPUT_PATH <- "data/registry.csv"
 PANEL_INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
@@ -286,7 +288,7 @@ patient_windows <- patient_month_panel %>%
     patient_id = as.character(.data$patient_id),
     variant_p = as.character(.data$variant_p),
     study_start_date = as.Date(.data$study_start_date),
-    study_end_date = as.Date(.data$study_end_date)
+    study_end_date = pmin(as.Date(.data$study_end_date), ANALYSIS_CUTOFF_DATE)
   ) %>%
   group_by(.data$patient_id) %>%
   summarise(

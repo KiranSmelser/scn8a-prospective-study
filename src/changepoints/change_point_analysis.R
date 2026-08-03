@@ -852,7 +852,7 @@ patient_windows <- patient_month_panel %>%
   dplyr::mutate(
     patient_id = as.character(.data$patient_id),
     study_start_date = as.Date(.data$study_start_date),
-    study_end_date = as.Date(.data$study_end_date),
+    study_end_date = pmin(as.Date(.data$study_end_date), ANALYSIS_CUTOFF_DATE),
     seizure_count = as.integer(suppressWarnings(as.numeric(.data$seizure_count)))
   ) %>%
   dplyr::filter(

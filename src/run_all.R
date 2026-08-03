@@ -76,7 +76,7 @@ pipeline_steps <- data.frame(
     rep("modeling", 2),
     rep("changepoints", 3),
     rep("periodicity", 4),
-    "episodicity",
+    rep("episodicity", 2),
     "timelines"
   ),
   script = c(
@@ -123,6 +123,7 @@ pipeline_steps <- data.frame(
     "src/periodicity/plot_patient_level_periodicity.R",
     "src/periodicity/plot_patient_level_permutation.R",
     "src/episodicity/patient_level_episodicity.R",
+    "src/episodicity/plot_patient_level_episodicity.R",
     "src/timelines/timelines.R"
   ),
   stringsAsFactors = FALSE

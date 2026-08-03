@@ -6,6 +6,8 @@ suppressPackageStartupMessages({
   library(performance)
 })
 
+source("src/analysis_config.R")
+
 INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 OUTPUT_DIR <- "output/tabs/modeling"
@@ -105,7 +107,7 @@ modeling_data <- patient_month_panel %>%
     patient_id = factor(.data$patient_id),
     month = as.Date(.data$month),
     study_start_date = as.Date(.data$study_start_date),
-    study_end_date = as.Date(.data$study_end_date),
+    study_end_date = pmin(as.Date(.data$study_end_date), ANALYSIS_CUTOFF_DATE),
     patient_zero_rate = suppressWarnings(as.numeric(.data$patient_zero_rate)),
     next_month_start = as.Date(format(.data$month + 32, "%Y-%m-01")),
     month_end = .data$next_month_start - 1,
@@ -120,6 +122,7 @@ modeling_data <- patient_month_panel %>%
   ) %>%
   dplyr::select(all_of(c(REQUIRED_COLUMNS, "patient_zero_rate", "observed_days_in_month"))) %>%
   dplyr::filter(
+    .data$month <= ANALYSIS_CUTOFF_DATE,
     if_all(all_of(REQUIRED_COLUMNS), ~ !is.na(.x)),
     !is.na(.data$patient_zero_rate),
     !is.na(.data$observed_days_in_month),

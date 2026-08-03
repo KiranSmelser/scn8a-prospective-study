@@ -12,7 +12,12 @@ source("src/analysis_config.R")
 
 PANEL_INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 SEIZURE_INPUT_PATH <- "output/tabs/seizures/seizures.csv"
-CHANGEPOINT_SEGMENTS_INPUT_PATH <- "output/tabs/changepoints/change_point_segments.csv"
+ANALYSIS_SCOPES <- tibble::tribble(
+  ~seizure_scope, ~seizure_type, ~changepoint_segments_path,
+  "all seizure types", NA_character_, "output/tabs/changepoints/change_point_segments.csv",
+  "focal-only", "Focal", "output/tabs/changepoints/focal/change_point_segments.csv",
+  "tonic-clonic-only", "Tonic-clonic", "output/tabs/changepoints/tonic_clonic/change_point_segments.csv"
+)
 OUTPUT_DIR <- "output/tabs/episodicity"
 PATIENT_RESULTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_level_episodicity.csv")
 OBSERVED_CLUMPS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_level_observed_clumps.csv")
@@ -21,7 +26,7 @@ DAILY_PANEL_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_day_episodicity_panel.
 EXPECTED_COHORT_SIZE <- as.integer(Sys.getenv("EPISODICITY_EXPECTED_COHORT_SIZE", "23"))
 TAU_DAYS <- as.integer(strsplit(Sys.getenv("EPISODICITY_TAU_DAYS", "1,2,3"), ",")[[1]])
 PRIMARY_TAU_DAYS <- as.integer(Sys.getenv("EPISODICITY_PRIMARY_TAU_DAYS", "1"))
-PERMUTATION_REPLICATES <- as.integer(Sys.getenv("EPISODICITY_PERMUTATIONS", "1000"))
+PERMUTATION_REPLICATES <- as.integer(Sys.getenv("EPISODICITY_PERMUTATIONS", "10000"))
 RANDOM_SEED <- as.integer(Sys.getenv("EPISODICITY_RANDOM_SEED", "20260708"))
 ALPHA <- 0.05
 
@@ -35,8 +40,16 @@ if (!file.exists(SEIZURE_INPUT_PATH)) {
   stop("Input file not found: ", SEIZURE_INPUT_PATH, call. = FALSE)
 }
 
-if (!file.exists(CHANGEPOINT_SEGMENTS_INPUT_PATH)) {
-  stop("Input file not found: ", CHANGEPOINT_SEGMENTS_INPUT_PATH, call. = FALSE)
+missing_changepoint_paths <- ANALYSIS_SCOPES$changepoint_segments_path[
+  !file.exists(ANALYSIS_SCOPES$changepoint_segments_path)
+]
+
+if (length(missing_changepoint_paths) > 0) {
+  stop(
+    "Changepoint segment input file(s) not found: ",
+    paste(missing_changepoint_paths, collapse = ", "),
+    call. = FALSE
+  )
 }
 
 if (length(TAU_DAYS) == 0 || any(!is.finite(TAU_DAYS)) || any(TAU_DAYS < 0L)) {
@@ -369,6 +382,7 @@ if (nrow(patient_windows) != EXPECTED_COHORT_SIZE) {
 seizure_events <- readr::read_csv(SEIZURE_INPUT_PATH, show_col_types = FALSE) %>%
   dplyr::transmute(
     patient_id = as.character(.data$patient_id),
+    seizure_type = as.character(.data$type),
     event_date = parse_event_date(.data$date)
   ) %>%
   dplyr::inner_join(patient_windows, by = "patient_id") %>%
@@ -379,128 +393,152 @@ seizure_events <- readr::read_csv(SEIZURE_INPUT_PATH, show_col_types = FALSE) %>
     .data$event_date <= .data$study_end_date
   )
 
-daily_seizure_counts <- seizure_events %>%
-  dplyr::count(.data$patient_id, date = .data$event_date, name = "seizure_count")
+run_scope_analysis <- function(seizure_scope, seizure_type, changepoint_segments_path) {
+  scope_events <- seizure_events
+  if (!is.na(seizure_type)) {
+    scope_events <- scope_events %>%
+      dplyr::filter(.data$seizure_type == .env$seizure_type)
+  }
 
-daily_panel <- patient_windows %>%
-  dplyr::mutate(date = purrr::map2(.data$study_start_date, .data$study_end_date, ~ seq(.x, .y, by = "day"))) %>%
-  tidyr::unnest("date") %>%
-  dplyr::left_join(daily_seizure_counts, by = c("patient_id", "date")) %>%
-  tidyr::replace_na(list(seizure_count = 0L)) %>%
-  dplyr::mutate(
-    seizure_count = as.integer(.data$seizure_count),
-    seizure_day = .data$seizure_count > 0
-  )
+  daily_seizure_counts <- scope_events %>%
+    dplyr::count(.data$patient_id, date = .data$event_date, name = "seizure_count")
 
-changepoint_segments <- readr::read_csv(CHANGEPOINT_SEGMENTS_INPUT_PATH, show_col_types = FALSE) %>%
-  dplyr::transmute(
-    patient_id = as.character(.data$patient_id),
-    segment_id = as.integer(.data$segment_id),
-    segment_start_date = as.Date(.data$segment_start_date),
-    segment_end_date = pmin(as.Date(.data$segment_end_date), ANALYSIS_CUTOFF_DATE),
-    segment_source = "changepoint"
-  ) %>%
-  dplyr::filter(
-    .data$patient_id %in% patient_windows$patient_id,
-    !is.na(.data$segment_start_date),
-    !is.na(.data$segment_end_date),
-    .data$segment_start_date <= .data$segment_end_date
-  )
+  daily_panel <- patient_windows %>%
+    dplyr::mutate(date = purrr::map2(.data$study_start_date, .data$study_end_date, ~ seq(.x, .y, by = "day"))) %>%
+    tidyr::unnest("date") %>%
+    dplyr::left_join(daily_seizure_counts, by = c("patient_id", "date")) %>%
+    tidyr::replace_na(list(seizure_count = 0L)) %>%
+    dplyr::mutate(
+      seizure_scope = .env$seizure_scope,
+      seizure_count = as.integer(.data$seizure_count),
+      seizure_day = .data$seizure_count > 0
+    ) %>%
+    dplyr::relocate("seizure_scope")
 
-patients_with_changepoint_segments <- unique(changepoint_segments$patient_id)
+  changepoint_segments <- readr::read_csv(changepoint_segments_path, show_col_types = FALSE) %>%
+    dplyr::transmute(
+      patient_id = as.character(.data$patient_id),
+      segment_id = as.integer(.data$segment_id),
+      segment_start_date = as.Date(.data$segment_start_date),
+      segment_end_date = pmin(as.Date(.data$segment_end_date), ANALYSIS_CUTOFF_DATE),
+      segment_source = "changepoint"
+    ) %>%
+    dplyr::filter(
+      .data$patient_id %in% patient_windows$patient_id,
+      !is.na(.data$segment_start_date),
+      !is.na(.data$segment_end_date),
+      .data$segment_start_date <= .data$segment_end_date
+    )
 
-full_window_segments <- patient_windows %>%
-  dplyr::filter(!(.data$patient_id %in% patients_with_changepoint_segments)) %>%
-  dplyr::transmute(
-    patient_id = .data$patient_id,
-    segment_id = 1L,
-    segment_start_date = .data$study_start_date,
-    segment_end_date = .data$study_end_date,
-    segment_source = "full_study_window"
-  )
+  patients_with_changepoint_segments <- unique(changepoint_segments$patient_id)
 
-analysis_segments <- dplyr::bind_rows(changepoint_segments, full_window_segments) %>%
-  dplyr::inner_join(
-    patient_windows %>% dplyr::select("patient_id", "study_start_date", "study_end_date"),
-    by = "patient_id"
-  ) %>%
-  dplyr::mutate(
-    segment_start_date = pmax(.data$segment_start_date, .data$study_start_date),
-    segment_end_date = pmin(.data$segment_end_date, .data$study_end_date)
-  ) %>%
-  dplyr::filter(.data$segment_start_date <= .data$segment_end_date) %>%
-  dplyr::select(-"study_start_date", -"study_end_date") %>%
-  dplyr::arrange(.data$patient_id, .data$segment_start_date, .data$segment_id)
+  full_window_segments <- patient_windows %>%
+    dplyr::filter(!(.data$patient_id %in% patients_with_changepoint_segments)) %>%
+    dplyr::transmute(
+      patient_id = .data$patient_id,
+      segment_id = 1L,
+      segment_start_date = .data$study_start_date,
+      segment_end_date = .data$study_end_date,
+      segment_source = "full_study_window"
+    )
 
-daily_panel_segmented <- daily_panel %>%
-  dplyr::inner_join(analysis_segments, by = "patient_id", relationship = "many-to-many") %>%
-  dplyr::filter(.data$date >= .data$segment_start_date, .data$date <= .data$segment_end_date) %>%
-  dplyr::arrange(.data$patient_id, .data$date, .data$segment_id) %>%
-  dplyr::group_by(.data$patient_id, .data$date) %>%
-  dplyr::slice(1L) %>%
-  dplyr::ungroup()
+  analysis_segments <- dplyr::bind_rows(changepoint_segments, full_window_segments) %>%
+    dplyr::inner_join(
+      patient_windows %>% dplyr::select("patient_id", "study_start_date", "study_end_date"),
+      by = "patient_id"
+    ) %>%
+    dplyr::mutate(
+      segment_start_date = pmax(.data$segment_start_date, .data$study_start_date),
+      segment_end_date = pmin(.data$segment_end_date, .data$study_end_date)
+    ) %>%
+    dplyr::filter(.data$segment_start_date <= .data$segment_end_date) %>%
+    dplyr::select(-"study_start_date", -"study_end_date") %>%
+    dplyr::arrange(.data$patient_id, .data$segment_start_date, .data$segment_id)
 
-if (nrow(daily_panel_segmented) != nrow(daily_panel)) {
-  stop(
-    "Daily panel segmentation changed the number of patient-days from ",
-    nrow(daily_panel),
-    " to ",
-    nrow(daily_panel_segmented),
-    ". Check changepoint segment coverage.",
-    call. = FALSE
+  daily_panel_segmented <- daily_panel %>%
+    dplyr::inner_join(analysis_segments, by = "patient_id", relationship = "many-to-many") %>%
+    dplyr::filter(.data$date >= .data$segment_start_date, .data$date <= .data$segment_end_date) %>%
+    dplyr::arrange(.data$patient_id, .data$date, .data$segment_id) %>%
+    dplyr::group_by(.data$patient_id, .data$date) %>%
+    dplyr::slice(1L) %>%
+    dplyr::ungroup()
+
+  if (nrow(daily_panel_segmented) != nrow(daily_panel)) {
+    stop(
+      "Daily panel segmentation for ",
+      seizure_scope,
+      " changed the number of patient-days from ",
+      nrow(daily_panel),
+      " to ",
+      nrow(daily_panel_segmented),
+      ". Check changepoint segment coverage.",
+      call. = FALSE
+    )
+  }
+
+  patient_results <- daily_panel_segmented %>%
+    dplyr::group_by(.data$patient_id) %>%
+    dplyr::group_modify(function(patient_data, patient_key) {
+      patient_episodicity_test(patient_data)
+    }) %>%
+    dplyr::ungroup() %>%
+    dplyr::left_join(patient_windows, by = "patient_id") %>%
+    dplyr::mutate(seizure_scope = .env$seizure_scope) %>%
+    dplyr::relocate(
+      "seizure_scope",
+      "patient_id",
+      "variant_p",
+      "study_start_date",
+      "study_end_date",
+      "tau_days",
+      "primary_tau",
+      "observed_days",
+      "observed_seizure_days",
+      "observed_seizure_events",
+      "n_segments",
+      "segment_sources"
+    )
+
+  observed_clumps <- daily_panel_segmented %>%
+    dplyr::group_by(.data$patient_id) %>%
+    dplyr::group_modify(function(patient_data, patient_key) {
+      purrr::map_dfr(TAU_DAYS, ~ build_clumps(patient_data, .x))
+    }) %>%
+    dplyr::ungroup() %>%
+    dplyr::left_join(patient_windows, by = "patient_id") %>%
+    dplyr::mutate(seizure_scope = .env$seizure_scope) %>%
+    dplyr::relocate(
+      "seizure_scope",
+      "patient_id",
+      "variant_p",
+      "study_start_date",
+      "study_end_date",
+      "tau_days"
+    )
+
+  list(
+    daily_panel = daily_panel_segmented,
+    patient_results = patient_results,
+    observed_clumps = observed_clumps
   )
 }
 
 set.seed(RANDOM_SEED)
 
-patient_results <- daily_panel_segmented %>%
-  dplyr::group_by(.data$patient_id) %>%
-  dplyr::group_modify(function(patient_data, patient_key) {
-    patient_episodicity_test(patient_data)
-  }) %>%
-  dplyr::ungroup() %>%
-  dplyr::left_join(patient_windows, by = "patient_id") %>%
+scope_results <- purrr::pmap(ANALYSIS_SCOPES, run_scope_analysis)
+
+daily_panel_segmented <- purrr::map_dfr(scope_results, "daily_panel")
+patient_results <- purrr::map_dfr(scope_results, "patient_results") %>%
+  dplyr::group_by(.data$seizure_scope) %>%
   dplyr::mutate(
-    q_value_max_clump_events = NA_real_,
-    q_value_fraction_events_in_multi_event_clumps = NA_real_,
-    q_value_max_clump_duration_days = NA_real_,
-    significant_max_clump_events = FALSE,
-    significant_fraction_events_in_multi_event_clumps = FALSE,
-    significant_max_clump_duration_days = FALSE
+    q_value_max_clump_events = stats::p.adjust(.data$p_value_max_clump_events, method = "BH"),
+    q_value_fraction_events_in_multi_event_clumps = stats::p.adjust(
+      .data$p_value_fraction_events_in_multi_event_clumps,
+      method = "BH"
+    ),
+    q_value_max_clump_duration_days = stats::p.adjust(.data$p_value_max_clump_duration_days, method = "BH")
   ) %>%
-  dplyr::relocate(
-    "patient_id",
-    "variant_p",
-    "study_start_date",
-    "study_end_date",
-    "tau_days",
-    "primary_tau",
-    "observed_days",
-    "observed_seizure_days",
-    "observed_seizure_events",
-    "n_segments",
-    "segment_sources"
-  )
-
-valid_max_event_p_values <- is.finite(patient_results$p_value_max_clump_events)
-patient_results$q_value_max_clump_events[valid_max_event_p_values] <- stats::p.adjust(
-  patient_results$p_value_max_clump_events[valid_max_event_p_values],
-  method = "BH"
-)
-
-valid_fraction_p_values <- is.finite(patient_results$p_value_fraction_events_in_multi_event_clumps)
-patient_results$q_value_fraction_events_in_multi_event_clumps[valid_fraction_p_values] <- stats::p.adjust(
-  patient_results$p_value_fraction_events_in_multi_event_clumps[valid_fraction_p_values],
-  method = "BH"
-)
-
-valid_duration_p_values <- is.finite(patient_results$p_value_max_clump_duration_days)
-patient_results$q_value_max_clump_duration_days[valid_duration_p_values] <- stats::p.adjust(
-  patient_results$p_value_max_clump_duration_days[valid_duration_p_values],
-  method = "BH"
-)
-
-patient_results <- patient_results %>%
+  dplyr::ungroup() %>%
   dplyr::mutate(
     significant_max_clump_events = !is.na(.data$q_value_max_clump_events) & .data$q_value_max_clump_events < ALPHA,
     significant_fraction_events_in_multi_event_clumps = !is.na(.data$q_value_fraction_events_in_multi_event_clumps) &
@@ -511,21 +549,7 @@ patient_results <- patient_results %>%
       .data$significant_fraction_events_in_multi_event_clumps |
       .data$significant_max_clump_duration_days
   )
-
-observed_clumps <- daily_panel_segmented %>%
-  dplyr::group_by(.data$patient_id) %>%
-  dplyr::group_modify(function(patient_data, patient_key) {
-    purrr::map_dfr(TAU_DAYS, ~ build_clumps(patient_data, .x))
-  }) %>%
-  dplyr::ungroup() %>%
-  dplyr::left_join(patient_windows, by = "patient_id") %>%
-  dplyr::relocate(
-    "patient_id",
-    "variant_p",
-    "study_start_date",
-    "study_end_date",
-    "tau_days"
-  )
+observed_clumps <- purrr::map_dfr(scope_results, "observed_clumps")
 
 readr::write_csv(daily_panel_segmented, DAILY_PANEL_OUTPUT_PATH)
 readr::write_csv(patient_results, PATIENT_RESULTS_OUTPUT_PATH)

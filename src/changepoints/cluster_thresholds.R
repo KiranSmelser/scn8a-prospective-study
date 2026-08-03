@@ -22,6 +22,7 @@ ASSIGNMENT_REQUIRED_COLUMNS <- c("patient_id", "pam_k3")
 SEGMENT_REQUIRED_COLUMNS <- c("patient_id", "theta")
 CHANGEPOINT_REQUIRED_COLUMNS <- c(
   "patient_id",
+  "candidate_week",
   "significant",
   "pre_observed_days",
   "post_observed_days",
@@ -305,7 +306,7 @@ patient_windows <- panel %>%
   transmute(
     patient_id = as.character(.data$patient_id),
     study_start_date = as.Date(.data$study_start_date),
-    study_end_date = as.Date(.data$study_end_date),
+    study_end_date = pmin(as.Date(.data$study_end_date), ANALYSIS_CUTOFF_DATE),
     seizure_count = suppressWarnings(as.integer(as.numeric(.data$seizure_count)))
   ) %>%
   filter(
@@ -419,6 +420,7 @@ simulation_thresholds <- simulation_results %>%
 observed_significant_changes <- change_points %>%
   transmute(
     patient_id = as.character(.data$patient_id),
+    candidate_week = as.Date(.data$candidate_week),
     significant = .data$significant %in% TRUE | as.character(.data$significant) == "TRUE",
     pre_observed_days = suppressWarnings(as.numeric(.data$pre_observed_days)),
     post_observed_days = suppressWarnings(as.numeric(.data$post_observed_days)),
@@ -426,7 +428,11 @@ observed_significant_changes <- change_points %>%
     post_seizure_count = suppressWarnings(as.numeric(.data$post_seizure_count))
   ) %>%
   inner_join(cluster_lookup, by = "patient_id") %>%
-  filter(.data$significant) %>%
+  filter(
+    !is.na(.data$candidate_week),
+    .data$candidate_week <= ANALYSIS_CUTOFF_DATE,
+    .data$significant
+  ) %>%
   mutate(
     pre_rate_per_28d = STANDARD_MONTH_DAYS * .data$pre_seizure_count / .data$pre_observed_days,
     post_rate_per_28d = STANDARD_MONTH_DAYS * .data$post_seizure_count / .data$post_observed_days,

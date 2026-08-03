@@ -913,12 +913,16 @@ timeline_qc <- patient_order %>%
   ) %>%
   ungroup() %>%
   mutate(
-    timeline_end_date = if_else(is.na(timeline_end_date), timeline_end_date, pmin(timeline_end_date, current_date)),
     timeline_end_date = case_when(
       is.na(timeline_start_date) ~ timeline_end_date,
       is.na(timeline_end_date) ~ timeline_start_date,
       timeline_end_date < timeline_start_date ~ timeline_start_date,
       TRUE ~ timeline_end_date
+    ),
+    timeline_end_date = if_else(
+      is.na(.data$timeline_end_date),
+      .data$timeline_end_date,
+      pmin(.data$timeline_end_date, current_date)
     )
   )
 
@@ -1043,7 +1047,7 @@ plot_patient_timeline <- function(pt_id) {
 
   plot_end_date <- min(latest_date, current_date)
   if (earliest_date > plot_end_date) {
-    plot_end_date <- earliest_date
+    return(NULL)
   }
   pt_change_point_markers <- pt_change_points %>%
     transmute(

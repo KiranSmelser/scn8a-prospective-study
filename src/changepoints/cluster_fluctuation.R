@@ -169,6 +169,7 @@ changepoint_summary <- change_points %>%
     post_seizure_count = suppressWarnings(as.numeric(.data$post_seizure_count))
   ) %>%
   inner_join(cluster_lookup, by = "patient_id") %>%
+  filter(!is.na(.data$candidate_week), .data$candidate_week <= ANALYSIS_CUTOFF_DATE) %>%
   mutate(
     pre_rate_per_28d = if_else(
       is.finite(.data$pre_observed_days) & .data$pre_observed_days > 0,

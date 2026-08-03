@@ -164,11 +164,12 @@ patient_month_panel <- patient_month_panel %>%
     variant_p = as.character(.data$variant_p),
     month = as.Date(.data$month),
     study_start_date = as.Date(.data$study_start_date),
-    study_end_date = as.Date(.data$study_end_date)
+    study_end_date = pmin(as.Date(.data$study_end_date), ANALYSIS_CUTOFF_DATE)
   ) %>%
   filter(
     !is.na(.data$patient_id),
     !is.na(.data$month),
+    .data$month <= ANALYSIS_CUTOFF_DATE,
     !is.na(.data$study_start_date),
     !is.na(.data$study_end_date)
   )
