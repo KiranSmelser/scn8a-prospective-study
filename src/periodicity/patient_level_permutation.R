@@ -21,7 +21,10 @@ PATIENT_RESULTS_OUTPUT_PATH <- file.path(
 DAILY_PANEL_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_day_post_seizure_panel.csv")
 SEGMENTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_day_changepoint_segments.csv")
 
-EXPECTED_COHORT_SIZE <- as.integer(Sys.getenv("PERIODICITY_EXPECTED_COHORT_SIZE", "23"))
+EXPECTED_COHORT_SIZE <- as.integer(Sys.getenv(
+  "PERIODICITY_EXPECTED_COHORT_SIZE",
+  as.character(length(TARGET_PATIENT_IDS))
+))
 PERMUTATION_REPLICATES <- as.integer(Sys.getenv("PERIODICITY_PERMUTATIONS", "1000"))
 RANDOM_SEED <- as.integer(Sys.getenv("PERIODICITY_RANDOM_SEED", "20260507"))
 ALPHA <- 0.05

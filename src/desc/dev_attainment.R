@@ -7,7 +7,7 @@ suppressPackageStartupMessages({
   library(stringr)
 })
 
-source("src/analysis_config.R")
+source("src/data_corrections.R")
 
 CLUSTER_ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 
@@ -19,7 +19,9 @@ if (!file.exists(CLUSTER_ASSIGNMENTS_INPUT_PATH)) {
   )
 }
 
-survey_lookup_on_or_before_cutoff <- readr::read_csv("data/prospective_surveys.csv", show_col_types = FALSE) %>%
+corrected_surveys <- read_prospective_surveys_corrected()
+
+survey_lookup_on_or_before_cutoff <- corrected_surveys %>%
   dplyr::mutate(
     patient_id = as.character(.data$patient_id),
     survey_instance_id = as.character(.data$survey_instance_id),
@@ -42,7 +44,10 @@ cluster_assignments <- readr::read_csv(CLUSTER_ASSIGNMENTS_INPUT_PATH, show_col_
     pam_cluster = as.character(.data$pam_k3)
   )
 
-milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv", show_col_types = FALSE) %>%
+milestones_raw <- read_prospective_child_records_corrected(
+  "data/prospective_development_milestones.csv",
+  corrected_surveys
+) %>%
   dplyr::mutate(survey_instance_id = as.character(.data$survey_instance_id)) %>%
   dplyr::inner_join(survey_lookup_on_or_before_cutoff, by = "survey_instance_id") %>%
   dplyr::inner_join(cluster_assignments, by = "patient_id") %>%

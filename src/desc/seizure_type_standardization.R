@@ -7,6 +7,10 @@ suppressPackageStartupMessages({
 
 source("src/analysis_config.R")
 
+if (!exists("parse_corrected_datetime")) {
+  source("src/data_corrections.R")
+}
+
 normalize_seizure_text_for_match <- function(x) {
   normalized <- x %>%
     as.character() %>%
@@ -25,6 +29,10 @@ normalize_seizure_text_for_match <- function(x) {
 
 get_manual_seizure_overrides <- function() {
   c(
+    "myoclonic clonic seizure" = "Clonic",
+    "focal seizure eyes rolling up blinking" = "Focal",
+    "spasm myoclonic" = "Spasms",
+    "generalized" = "Tonic-clonic",
     "generalized motor seizure" = "Tonic-clonic",
     "uogolniony napad toniczny z krzykiem" = "Tonic",
     "uog lniony napad toniczny z krzykiem" = "Tonic",
@@ -259,7 +267,7 @@ standardize_seizure_events <- function(events_df, filter_to_seizure = TRUE) {
         .data$mapped_component_count == 1 ~ "mapped_single",
         TRUE ~ "mapped_multiple"
       ),
-      date_time = suppressWarnings(lubridate::ymd_hms(.data$date, quiet = TRUE, tz = "UTC")),
+      date_time = parse_corrected_datetime(.data$date, tz = "UTC"),
       event_date = as.Date(.data$date_time),
       month = as.Date(lubridate::floor_date(.data$date_time, "month"))
     ) %>%

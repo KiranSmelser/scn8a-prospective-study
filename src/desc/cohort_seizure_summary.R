@@ -5,7 +5,7 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
-source("src/analysis_config.R")
+source("src/data_corrections.R")
 
 PANEL_INPUT_PATH <- "output/tabs/modeling/patient_month_panel.csv"
 SURVEY_INPUT_PATH <- "data/prospective_surveys.csv"
@@ -96,7 +96,7 @@ if (dplyr::n_distinct(patient_month_panel$patient_id) != length(TARGET_PATIENT_I
   )
 }
 
-completed_prospective_survey_patients <- readr::read_csv(SURVEY_INPUT_PATH, show_col_types = FALSE) %>%
+completed_prospective_survey_patients <- read_prospective_surveys_corrected(SURVEY_INPUT_PATH) %>%
   dplyr::mutate(
     patient_id = as.character(.data$patient_id),
     prospective_study_complete = suppressWarnings(as.numeric(.data$prospective_study_complete))

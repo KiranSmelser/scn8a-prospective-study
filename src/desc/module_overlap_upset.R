@@ -5,7 +5,7 @@ suppressPackageStartupMessages({
   library(lubridate)
 })
 
-source("src/analysis_config.R")
+source("src/data_corrections.R")
 
 EVENTS_PATH <- "data/events.csv"
 MED_INTAKES_PATH <- "data/med_intakes.csv"
@@ -89,7 +89,7 @@ get_mood_sleep_patients <- function() {
 }
 
 get_prospective_matched_patients <- function() {
-  surveys <- safe_read_csv(PROSPECTIVE_SURVEYS_PATH)
+  surveys <- read_prospective_surveys_corrected(PROSPECTIVE_SURVEYS_PATH)
   if (!"patient_id" %in% names(surveys)) {
     return(character())
   }

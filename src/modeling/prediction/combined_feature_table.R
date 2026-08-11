@@ -15,19 +15,10 @@ OUTPUT_PATH <- file.path(OUTPUT_DIR, "combined_feature_table.csv")
 TARGET_CLUSTERS <- c("1", "2", "3")
 
 TARGETED_REGISTRY_SOURCE_COLUMNS <- c(
-  "age_seizure_onset_months",
   "initial_tonic",
-  "initial_tonic_clonic_grand_mal",
-  "seizure_type_tonic",
-  "seizure_type_tonic_clonic_grand_mal",
   "seizure_type_focal_aware_simple_partial_seizure",
-  "seizure_type_focal_impaired_awareness_complex_partial_seizure_limbic_psychomotor",
-  "dev_skill_brush_teeth_with_no_help",
-  "dev_skill_name_colors",
-  "dev_skill_wash_and_dry_hands",
-  "dev_skill_used_a_2_word_combination",
-  "dev_skill_spoken_in_phrases",
-  "dev_skill_read"
+  "seizure_type_typical_absence_petit_mal",
+  "dev_skill_brush_teeth_with_no_help"
 )
 
 required_files <- c(REGISTRY_INPUT_PATH, CLUSTER_ASSIGNMENTS_INPUT_PATH)
@@ -64,51 +55,20 @@ row_max_binary <- function(...) {
   as.numeric(row_value > 0)
 }
 
-row_mean_score <- function(...) {
-  values <- cbind(...)
-  values <- apply(values, 2, function(x) suppressWarnings(as.numeric(x)))
-  row_value <- rowMeans(values, na.rm = TRUE)
-  row_value[is.nan(row_value)] <- 0
-  row_value
-}
-
 registry <- readr::read_csv(REGISTRY_INPUT_PATH, show_col_types = FALSE)
 cluster_assignments <- readr::read_csv(CLUSTER_ASSIGNMENTS_INPUT_PATH, show_col_types = FALSE)
 
 check_columns(registry, c("patient_id", TARGETED_REGISTRY_SOURCE_COLUMNS), "Registry input")
 check_columns(cluster_assignments, c("patient_id", "pam_k3"), "Cluster assignments")
 
-onset_months <- suppressWarnings(as.numeric(registry$age_seizure_onset_months))
-onset_fill_value <- stats::median(onset_months[is.finite(onset_months)], na.rm = TRUE)
-if (!is.finite(onset_fill_value)) {
-  onset_fill_value <- 0
-}
-onset_months_imputed <- onset_months
-onset_months_imputed[!is.finite(onset_months_imputed)] <- onset_fill_value
-
 targeted_registry_features <- registry %>%
   transmute(
     patient_id = as.character(.data$patient_id),
-    registry_age_seizure_onset_source_present = as.numeric(is.finite(onset_months)),
-    registry_tonic_clonic_history = suppressWarnings(as.numeric(.data$seizure_type_tonic_clonic_grand_mal)),
-    registry_tonic_history = row_max_binary(
+    registry_brush_teeth_independently = suppressWarnings(as.numeric(.data$dev_skill_brush_teeth_with_no_help)),
+    registry_cluster2_signature = row_max_binary(
       .data$initial_tonic,
-      .data$seizure_type_tonic,
-      .data$initial_tonic_clonic_grand_mal
-    ),
-    registry_focal_aware_or_impaired = row_max_binary(
       .data$seizure_type_focal_aware_simple_partial_seizure,
-      .data$seizure_type_focal_impaired_awareness_complex_partial_seizure_limbic_psychomotor
-    ),
-    registry_log1p_age_seizure_onset_months = log1p(onset_months_imputed),
-    registry_age_seizure_onset_missing = as.numeric(!is.finite(onset_months)),
-    registry_higher_dev_language_adl_score = row_mean_score(
-      .data$dev_skill_brush_teeth_with_no_help,
-      .data$dev_skill_name_colors,
-      .data$dev_skill_wash_and_dry_hands,
-      .data$dev_skill_used_a_2_word_combination,
-      .data$dev_skill_spoken_in_phrases,
-      .data$dev_skill_read
+      .data$seizure_type_typical_absence_petit_mal
     )
   ) %>%
   filter(!is.na(.data$patient_id)) %>%
@@ -119,12 +79,8 @@ targeted_registry_features <- registry %>%
 
 feature_definitions <- tibble::tribble(
   ~feature, ~feature_type,
-  "registry_tonic_clonic_history", "binary",
-  "registry_tonic_history", "binary",
-  "registry_focal_aware_or_impaired", "binary",
-  "registry_log1p_age_seizure_onset_months", "continuous",
-  "registry_age_seizure_onset_missing", "binary",
-  "registry_higher_dev_language_adl_score", "continuous"
+  "registry_brush_teeth_independently", "binary",
+  "registry_cluster2_signature", "binary"
 )
 
 analysis_data <- targeted_registry_features %>%

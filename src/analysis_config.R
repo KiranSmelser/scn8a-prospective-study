@@ -26,7 +26,8 @@ TARGET_PATIENT_IDS <- c(
   "688de8e1e20e57ca0b5335eb",
   "681876911191a9613d188b77",
   "67b562cae8efcd6464eeb345",
-  "693e0b36ce6a468b362ee35d"
+  "693e0b36ce6a468b362ee35d",
+  "6723f6b40f7cf300409a6197"
 )
 
 PATIENT_START_DATES <- tibble::tibble(

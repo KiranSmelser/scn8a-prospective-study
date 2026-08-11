@@ -21,9 +21,7 @@ dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
 current_date <- analysis_end_date()
 
 parse_event_date <- function(x) {
-  parsed <- suppressWarnings(ymd_hms(x, tz = "UTC"))
-  parsed <- if_else(is.na(parsed), suppressWarnings(ymd(x)), parsed)
-  as.Date(parsed)
+  parse_corrected_date(x)
 }
 
 parse_bool <- function(x) {
@@ -89,8 +87,11 @@ forms <- if (file.exists("data/forms.csv")) {
 }
 med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE)
 medications_raw <- read_medications_corrected()
-surveys <- readr::read_csv("data/prospective_surveys.csv", show_col_types = FALSE)
-milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv", show_col_types = FALSE)
+surveys <- read_prospective_surveys_corrected()
+milestones_raw <- read_prospective_child_records_corrected(
+  "data/prospective_development_milestones.csv",
+  surveys
+)
 whatsapp_status <- readr::read_csv("data/whatsapp_status.csv", show_col_types = FALSE)
 
 patient_variant_lookup <- whatsapp_status %>%
@@ -348,7 +349,11 @@ timeline_windows <- tibble(patient_id = TARGET_PATIENT_IDS) %>%
   left_join(app_usage_summary, by = "patient_id") %>%
   rowwise() %>%
   mutate(
-    timeline_start_date = .data$app_activity_date,
+    timeline_start_date = select_analysis_start_date(
+      .data$patient_id,
+      .data$app_activity_date,
+      .data$seizure_first_date
+    ),
     timeline_end_date = {
       dates <- c(
         .data$med_end_max,

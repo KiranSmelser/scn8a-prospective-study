@@ -17,7 +17,10 @@ OUTPUT_DIR <- "output/tabs/periodicity"
 PATIENT_RESULTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_level_periodicity.csv")
 LAG_RESULTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_level_periodicity_lags.csv")
 
-EXPECTED_COHORT_SIZE <- as.integer(Sys.getenv("PERIODICITY_EXPECTED_COHORT_SIZE", "23"))
+EXPECTED_COHORT_SIZE <- as.integer(Sys.getenv(
+  "PERIODICITY_EXPECTED_COHORT_SIZE",
+  as.character(length(TARGET_PATIENT_IDS))
+))
 MAX_LAG_DAYS <- as.integer(Sys.getenv("PERIODICITY_MAX_LAG_DAYS", "90"))
 MIN_LAG_DAYS <- as.integer(Sys.getenv("PERIODICITY_MIN_LAG_DAYS", "1"))
 PERMUTATION_REPLICATES <- as.integer(Sys.getenv("PERIODICITY_ACF_PERMUTATIONS", "1000"))

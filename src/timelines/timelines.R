@@ -9,15 +9,26 @@ source("src/desc/medication_standardization.R")
 source("src/desc/seizure_type_standardization.R")
 source("src/data_corrections.R")
 
+timeline_args <- commandArgs(trailingOnly = TRUE)
+timeline_patient_args <- grep("^--patient-id=", timeline_args, value = TRUE)
+timeline_patient_filter <- unique(trimws(unlist(strsplit(
+  sub("^--patient-id=", "", timeline_patient_args),
+  ",",
+  fixed = TRUE
+))))
+timeline_patient_filter <- timeline_patient_filter[!is.na(timeline_patient_filter) & timeline_patient_filter != ""]
+
 dir.create("output/figs", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/figs/timelines", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/tabs", recursive = TRUE, showWarnings = FALSE)
-existing_timeline_pdfs <- list.files("output/figs/timelines", pattern = "\\.pdf$", full.names = TRUE)
-if (length(existing_timeline_pdfs) > 0) {
-  invisible(file.remove(existing_timeline_pdfs))
-}
-if (file.exists("output/figs/helpilepsy_timelines.pdf")) {
-  invisible(file.remove("output/figs/helpilepsy_timelines.pdf"))
+if (length(timeline_patient_filter) == 0) {
+  existing_timeline_pdfs <- list.files("output/figs/timelines", pattern = "\\.pdf$", full.names = TRUE)
+  if (length(existing_timeline_pdfs) > 0) {
+    invisible(file.remove(existing_timeline_pdfs))
+  }
+  if (file.exists("output/figs/helpilepsy_timelines.pdf")) {
+    invisible(file.remove("output/figs/helpilepsy_timelines.pdf"))
+  }
 }
 current_date <- analysis_end_date()
 CHANGE_POINT_INPUT_PATH <- "output/tabs/changepoints/patient_change_points.csv"
@@ -296,8 +307,11 @@ form_answers <- if (file.exists("data/form_answers.csv")) {
   tibble()
 }
 med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE)
-surveys <- readr::read_csv("data/prospective_surveys.csv", show_col_types = FALSE)
-milestones_raw <- readr::read_csv("data/prospective_development_milestones.csv", show_col_types = FALSE)
+surveys <- read_prospective_surveys_corrected()
+milestones_raw <- read_prospective_child_records_corrected(
+  "data/prospective_development_milestones.csv",
+  surveys
+)
 app_activity_dates <- jsonlite::fromJSON("data/patient_summary_metrics.json") %>%
   as_tibble() %>%
   transmute(
@@ -679,6 +693,17 @@ patients_with_data <- union(patients_with_data, unique(type_specific_change_poin
 patients_with_data <- union(patients_with_data, unique(three_month_change_point_markers$patient_id))
 patients_with_data <- patients_with_data[!is.na(patients_with_data)]
 patients_with_data <- intersect(patients_with_data, whatsapp_names$patient_id)
+if (length(timeline_patient_filter) > 0) {
+  missing_timeline_patients <- setdiff(timeline_patient_filter, patients_with_data)
+  if (length(missing_timeline_patients) > 0) {
+    stop(
+      "Requested timeline patient(s) not found in the available timeline data: ",
+      paste(missing_timeline_patients, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  patients_with_data <- timeline_patient_filter
+}
 
 milestone_row_counts <- milestone_intervals %>%
   group_by(patient_id) %>%
@@ -767,7 +792,7 @@ med_summary <- med_intervals %>%
   summarise(
     n_med_intervals = n(),
     n_medications = n_distinct(med_name),
-    n_medications_ongoing = sum(is.na(end_date)),
+    n_medications_ongoing = sum(is.na(end_date) | end_date >= current_date),
     med_start_min = min(start_date, na.rm = TRUE),
     med_start_max = max(start_date, na.rm = TRUE),
     med_end_max = if (all(is.na(end_date))) as.Date(NA) else max(end_date, na.rm = TRUE),
@@ -926,9 +951,11 @@ timeline_qc <- patient_order %>%
     )
   )
 
-readr::write_csv(timeline_qc, "output/tabs/helpilepsy_timeline_qc.csv")
-readr::write_csv(medications_missing_schedule, "output/tabs/helpilepsy_medications_missing_schedule.csv")
-readr::write_csv(medication_refs_missing_metadata, "output/tabs/helpilepsy_medication_refs_missing_metadata.csv")
+if (length(timeline_patient_filter) == 0) {
+  readr::write_csv(timeline_qc, "output/tabs/helpilepsy_timeline_qc.csv")
+  readr::write_csv(medications_missing_schedule, "output/tabs/helpilepsy_medications_missing_schedule.csv")
+  readr::write_csv(medication_refs_missing_metadata, "output/tabs/helpilepsy_medication_refs_missing_metadata.csv")
+}
 
 # Plotting
 
@@ -1086,7 +1113,14 @@ plot_patient_timeline <- function(pt_id) {
   pt_meds <- pt_meds %>%
     mutate(
       med_label = med_name,
-      med_status = if_else(is.na(end_date), "Ongoing", "Ended"),
+      # Intervals extending past the analysis cutoff are censored to the cutoff
+      # upstream. Treat a medication active through that date as ongoing rather
+      # than interpreting the censored boundary as a true discontinuation.
+      med_status = if_else(
+        is.na(end_date) | end_date >= current_date,
+        "Ongoing",
+        "Ended"
+      ),
       end_plot_date = case_when(
         is.na(end_date) ~ plot_end_date,
         end_date > plot_end_date ~ plot_end_date,
@@ -1265,7 +1299,9 @@ plot_patient_timeline <- function(pt_id) {
       )
   }
 
-  if (nrow(pt_diary) > 0) {
+  # Michael's weekly survey row is retained for layout consistency, but its
+  # completion dots are intentionally suppressed.
+  if (nrow(pt_diary) > 0 && pt_id != MICHAEL_SPIEGEL_PATIENT_ID) {
     p <- p +
       geom_point(
         data = pt_diary,

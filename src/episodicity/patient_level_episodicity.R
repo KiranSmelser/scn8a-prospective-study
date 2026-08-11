@@ -23,7 +23,10 @@ PATIENT_RESULTS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_level_episodicity.
 OBSERVED_CLUMPS_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_level_observed_clumps.csv")
 DAILY_PANEL_OUTPUT_PATH <- file.path(OUTPUT_DIR, "patient_day_episodicity_panel.csv")
 
-EXPECTED_COHORT_SIZE <- as.integer(Sys.getenv("EPISODICITY_EXPECTED_COHORT_SIZE", "23"))
+EXPECTED_COHORT_SIZE <- as.integer(Sys.getenv(
+  "EPISODICITY_EXPECTED_COHORT_SIZE",
+  as.character(length(TARGET_PATIENT_IDS))
+))
 TAU_DAYS <- as.integer(strsplit(Sys.getenv("EPISODICITY_TAU_DAYS", "1,2,3"), ",")[[1]])
 PRIMARY_TAU_DAYS <- as.integer(Sys.getenv("EPISODICITY_PRIMARY_TAU_DAYS", "1"))
 PERMUTATION_REPLICATES <- as.integer(Sys.getenv("EPISODICITY_PERMUTATIONS", "10000"))
