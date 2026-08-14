@@ -26,6 +26,7 @@ if (file.exists(old_membership_output_path)) {
 analysis_end <- analysis_end_date()
 max_sets <- 8L
 max_intersections_to_plot <- 25L
+epilepsia_teal <- "#5698A3"
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
@@ -169,7 +170,7 @@ upset_bar_plot <- ggplot2::ggplot(
   upset_intersections_top,
   ggplot2::aes(x = .data$plot_x, y = .data$n_patients)
 ) +
-  ggplot2::geom_col(fill = "#4E79A7", width = 0.72) +
+  ggplot2::geom_col(fill = epilepsia_teal, width = 0.72) +
   ggplot2::geom_text(
     ggplot2::aes(label = .data$n_patients),
     vjust = -0.25,
@@ -209,7 +210,7 @@ upset_matrix_plot <- ggplot2::ggplot(
   ggplot2::geom_point(color = "grey85", size = 2.2) +
   ggplot2::geom_point(
     data = upset_matrix %>% dplyr::filter(.data$present),
-    color = "#2D6A9F",
+    color = epilepsia_teal,
     size = 2.4
   ) +
   ggplot2::scale_y_continuous(
@@ -242,7 +243,7 @@ set_total_plot <- ggplot2::ggplot(set_patient_totals) +
       ymin = .data$y_idx - 0.34,
       ymax = .data$y_idx + 0.34
     ),
-    fill = "#4E79A7"
+    fill = epilepsia_teal
   ) +
   ggplot2::geom_text(
     ggplot2::aes(x = .data$n_patients, y = .data$y_idx, label = .data$n_patients),

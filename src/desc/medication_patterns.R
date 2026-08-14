@@ -123,12 +123,12 @@ medication_guide_category_order <- c(
 )
 
 upset_category_palette <- c(
-  "Sodium Channel Blockers" = "#1b9e77",
-  "GABAergic" = "#d95f02",
-  "Calcium Channel Blockers" = "#7570b3",
-  "SVP2A" = "#e7298a",
-  "Other/Multiple" = "#66a61e",
-  "Uncategorized" = "#666666"
+  "Sodium Channel Blockers" = "#5698A3",
+  "GABAergic" = "#7A5072",
+  "Calcium Channel Blockers" = "#67771A",
+  "SVP2A" = "#0076C0",
+  "Other/Multiple" = "#E37C1D",
+  "Uncategorized" = "#B22222"
 )
 
 medication_guide_map <- tribble(
@@ -318,7 +318,7 @@ comparison_plot <- ggplot(
   aes(x = n_patients, y = name_standardized, fill = status)
 ) +
   geom_col(position = position_dodge(width = 0.75), width = 0.65) +
-  scale_fill_manual(values = c("Active" = "#1f78b4", "Weaned" = "#e31a1c")) +
+  scale_fill_manual(values = c("Active" = "#0076C0", "Weaned" = "#B22222")) +
   facet_grid(
     rows = vars(guide_category),
     scales = "free_y",

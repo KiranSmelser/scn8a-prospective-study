@@ -3,6 +3,12 @@
 ANALYSIS_CUTOFF_DATE <- as.Date("2026-05-31")
 STANDARD_MONTH_DAYS <- 28L
 
+EPILEPSIA_CLUSTER_COLORS <- c(
+  "1" = "#5698A3",
+  "2" = "#E37C1D",
+  "3" = "#7A5072"
+)
+
 TARGET_PATIENT_IDS <- c(
   "67b6126de8efcd6464eeb8c4",
   "67b59b49e8efcd6464eeb595",

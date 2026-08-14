@@ -6,6 +6,8 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
+source("src/analysis_config.R")
+
 ASSIGNMENTS_INPUT_PATH <- "output/tabs/clustering/cluster_assignments.csv"
 OUTPUT_FIG_DIR <- "output/figs/clustering"
 OUTPUT_PDF_PATH <- file.path(OUTPUT_FIG_DIR, "clusters_alluvial.pdf")
@@ -15,11 +17,6 @@ NO_TONIC_CLONIC_LABEL <- "No\ntonic-\nclonic"
 NO_FOCAL_LABEL <- "No\nfocal"
 TONIC_CLONIC_LEVELS <- c(CLUSTER_LEVELS, NO_TONIC_CLONIC_LABEL)
 FOCAL_LEVELS <- c(CLUSTER_LEVELS, NO_FOCAL_LABEL)
-CLUSTER_COLORS <- c(
-  "1" = "#66C2A5",
-  "2" = "#FC8D62",
-  "3" = "#8DA0CB"
-)
 
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
 
@@ -105,7 +102,8 @@ p_alluvial <- ggplot2::ggplot(
   ) +
   ggplot2::scale_y_continuous(breaks = y_breaks, expand = c(0, 0.15)) +
   ggplot2::scale_fill_manual(
-    values = setNames(CLUSTER_COLORS, CLUSTER_LEVELS),
+    values = EPILEPSIA_CLUSTER_COLORS,
+    breaks = names(EPILEPSIA_CLUSTER_COLORS),
     na.translate = FALSE,
     name = "Cluster"
   ) +

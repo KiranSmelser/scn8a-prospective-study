@@ -142,7 +142,11 @@ p_pca <- ggplot2::ggplot(
     max.overlaps = Inf,
     show.legend = FALSE
   ) +
-  ggplot2::scale_color_brewer(palette = "Set2", na.translate = FALSE) +
+  ggplot2::scale_color_manual(
+    values = EPILEPSIA_CLUSTER_COLORS,
+    breaks = names(EPILEPSIA_CLUSTER_COLORS),
+    na.translate = FALSE
+  ) +
   ggplot2::labs(
     title = "Patient Seizure-Frequency Clusters",
     x = "PC1",
