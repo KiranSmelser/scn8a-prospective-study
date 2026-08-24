@@ -225,7 +225,7 @@ p_dev_attainment <- milestones_summary %>%
       color = dplyr::if_else(as.character(.data$pam_cluster) == "3", "white", "#1F2933")
     ),
     position = position_stack(vjust = 0.5),
-    size = 2.8,
+    size = 4,
     na.rm = TRUE
   ) +
   scale_color_identity() +
@@ -243,15 +243,19 @@ p_dev_attainment <- milestones_summary %>%
   ) +
   labs(
     x = "Patients",
-    y = NULL,
-    title = "Developmental Milestone Attainment",
+    y = NULL
   ) +
-  theme_minimal(base_size = 12) +
+  theme_minimal(base_size = 16) +
   theme(
     panel.grid.major.y = element_blank(),
     legend.position = "bottom",
+    legend.title = element_text(size = 13),
+    legend.text = element_text(size = 13),
+    axis.text.x = element_text(size = 13, color = "#222222"),
+    axis.text.y = element_text(size = 13, color = "#222222"),
+    axis.title.x = element_text(size = 14),
     strip.placement = "outside",
-    strip.text.y.left = element_text(angle = 0, hjust = 1, face = "bold")
+    strip.text.y.left = element_text(angle = 0, hjust = 1, face = "bold", size = 14)
   )
 
 png_output_path <- "output/figs/dev_attainment.png"

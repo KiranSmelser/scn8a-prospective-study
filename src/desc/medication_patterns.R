@@ -10,6 +10,7 @@ INPUT_PATH <- "output/tabs/medication_standardization/non_rescue_epilepsy_medica
 WHATSAPP_STATUS_PATH <- "data/whatsapp_status.csv"
 OUTPUT_TAB_DIR <- "output/tabs/medication_patterns"
 OUTPUT_FIG_DIR <- "output/figs/medication_patterns"
+publication_base_size <- 16
 
 dir.create(OUTPUT_TAB_DIR, recursive = TRUE, showWarnings = FALSE)
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
@@ -71,6 +72,11 @@ load_patient_mutation_lookup <- function(path) {
     transmute(
       patient_id = stringr::str_squish(as.character(patient_id)),
       mutation = stringr::str_squish(as.character(variant_p)),
+      mutation = dplyr::recode(
+        mutation,
+        "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
+          "K1473K + Pro1428_Lys1473del"
+      ),
       mutation = na_if(mutation, ""),
       mutation = if_else(
         !is.na(mutation) & stringr::str_to_lower(mutation) %in% c("na", "n/a", "nan", "unknown"),
@@ -326,17 +332,20 @@ comparison_plot <- ggplot(
     switch = "y"
   ) +
   labs(
-    title = "Active vs Weaned Medications",
     x = "Number of Patients",
     y = NULL,
     fill = NULL
   ) +
-  theme_minimal(base_size = 11) +
+  theme_minimal(base_size = publication_base_size) +
   theme(
     panel.grid.major.y = element_blank(),
     legend.position = "top",
+    legend.text = element_text(size = 13),
+    axis.text.x = element_text(size = 13, color = "#222222"),
+    axis.text.y = element_text(size = 13, color = "#222222"),
+    axis.title.x = element_text(size = 14),
     strip.placement = "outside",
-    strip.text.y.left = element_text(angle = 0, hjust = 1, face = "bold")
+    strip.text.y.left = element_text(angle = 0, hjust = 1, face = "bold", size = 14)
   )
 
 ggplot2::ggsave(
@@ -616,14 +625,14 @@ if (length(top_upset_meds) >= 2 && nrow(active_med_list_by_patient) > 0) {
       data = upset_segments,
       aes(x = plot_x, xend = plot_x, y = y_min, yend = y_max),
       inherit.aes = FALSE,
-      linewidth = 0.5,
+      linewidth = 0.65,
       color = "black"
     ) +
-    geom_point(color = "grey85", size = 2.2) +
+    geom_point(color = "grey85", size = 3.2) +
     geom_point(
       data = upset_matrix %>% filter(present),
       aes(color = guide_category),
-      size = 2.4
+      size = 3.8
     ) +
     scale_y_continuous(
       breaks = seq_len(n_upset_meds),
@@ -634,24 +643,43 @@ if (length(top_upset_meds) >= 2 && nrow(active_med_list_by_patient) > 0) {
       breaks = upset_category_levels_present,
       drop = FALSE
     ) +
+    guides(
+      color = guide_legend(override.aes = list(size = 5.5))
+    ) +
     scale_x_discrete(
       limits = as.character(plot_levels),
       labels = setNames(
-        upset_plot_intersections$variant_label,
+        stringr::str_replace(
+          upset_plot_intersections$variant_label,
+          stringr::fixed(" + "),
+          " +\n"
+        ),
         as.character(upset_plot_intersections$plot_x)
       )
     ) +
     labs(
-      title = "Active Medication Combinations UpSet Plot",
       x = "SCN8A Variant(s)",
       y = NULL,
       color = "Category"
     ) +
-    theme_minimal(base_size = 11) +
+    theme_minimal(base_size = publication_base_size) +
     theme(
       panel.grid.major.x = element_blank(),
       panel.grid.minor = element_blank(),
-      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+      axis.text.x = element_text(
+        angle = 90,
+        vjust = 0.5,
+        hjust = 1,
+        size = 11,
+        lineheight = 0.9,
+        color = "#222222"
+      ),
+      axis.text.y = element_text(size = 13, color = "#222222"),
+      axis.title.x = element_text(size = 14),
+      legend.title = element_text(size = 15),
+      legend.text = element_text(size = 14),
+      legend.key.height = grid::unit(0.6, "cm"),
+      legend.key.width = grid::unit(0.6, "cm")
     )
 
   upset_plot_path <- file.path(OUTPUT_FIG_DIR, "active_medication_combinations_upset.pdf")

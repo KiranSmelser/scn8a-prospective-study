@@ -20,6 +20,8 @@ RATE_FEATURES <- c(
 )
 DIRECT_SCALE_FEATURES <- c("proportion_zero_seizure_months")
 PCA_COMPONENT_COUNT <- 2L
+publication_base_size <- 16
+publication_boxplot_base_size <- 18
 
 dir.create(OUTPUT_FIG_DIR, recursive = TRUE, showWarnings = FALSE)
 
@@ -125,7 +127,14 @@ pca_plot_data <- features %>%
       pc2 = pca_fit$x[, 2]
     )
   ) %>%
-  left_join(assignments, by = c("patient_id", "variant_p"))
+  left_join(assignments, by = c("patient_id", "variant_p")) %>%
+  mutate(
+    variant_label = dplyr::recode(
+      .data$variant_p,
+      "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
+        "K1473K + Pro1428_Lys1473del"
+    )
+  )
 
 p_pca <- ggplot2::ggplot(
   pca_plot_data,
@@ -133,12 +142,12 @@ p_pca <- ggplot2::ggplot(
 ) +
   ggplot2::geom_hline(yintercept = 0, linewidth = 0.3, color = "grey85") +
   ggplot2::geom_vline(xintercept = 0, linewidth = 0.3, color = "grey85") +
-  ggplot2::geom_point(size = 3, alpha = 0.9) +
+  ggplot2::geom_point(size = 3.6, alpha = 0.9) +
   ggrepel::geom_text_repel(
-    ggplot2::aes(label = .data$variant_p),
-    size = 3,
-    box.padding = 0.3,
-    point.padding = 0.25,
+    ggplot2::aes(label = .data$variant_label),
+    size = 4.2,
+    box.padding = 0.4,
+    point.padding = 0.35,
     max.overlaps = Inf,
     show.legend = FALSE
   ) +
@@ -147,16 +156,22 @@ p_pca <- ggplot2::ggplot(
     breaks = names(EPILEPSIA_CLUSTER_COLORS),
     na.translate = FALSE
   ) +
+  ggplot2::guides(
+    color = ggplot2::guide_legend(override.aes = list(size = 5))
+  ) +
   ggplot2::labs(
-    title = "Patient Seizure-Frequency Clusters",
     x = "PC1",
     y = "PC2",
     color = "Cluster"
   ) +
-  ggplot2::theme_classic(base_size = 11) +
+  ggplot2::theme_classic(base_size = publication_base_size) +
   ggplot2::theme(
-    plot.title = ggplot2::element_text(face = "bold"),
-    legend.position = "top"
+    legend.position = "top",
+    legend.title = ggplot2::element_text(size = 14),
+    legend.text = ggplot2::element_text(size = 14),
+    legend.key.width = grid::unit(0.6, "cm"),
+    axis.text = ggplot2::element_text(size = 14, color = "#222222"),
+    axis.title = ggplot2::element_text(size = 15)
   )
 
 ggplot2::ggsave(
@@ -210,6 +225,7 @@ for (i in seq_len(nrow(feature_plot_specs))) {
   spec <- feature_plot_specs[i, ]
   feature_name <- as.character(spec$feature_name[[1]])
   feature_sym <- rlang::sym(feature_name)
+  use_figure2_format <- feature_name != "iqr_monthly_seizure_rate"
   plot_data <- boxplot_data %>%
     filter(!is.na(.data[[feature_name]]))
 
@@ -228,16 +244,52 @@ for (i in seq_len(nrow(feature_plot_specs))) {
     p.adjust.method = "holm",
     package = "RColorBrewer",
     palette = "Set2",
-    title = as.character(spec$plot_label[[1]]),
+    title = if (use_figure2_format) NULL else as.character(spec$plot_label[[1]]),
     xlab = "Cluster",
     ylab = as.character(spec$y_label[[1]]),
-    ggtheme = ggplot2::theme_classic(base_size = 11),
+    centrality.point.args = if (use_figure2_format) {
+      list(size = 6, color = "darkred")
+    } else {
+      list(size = 5, color = "darkred")
+    },
+    centrality.label.args = if (use_figure2_format) {
+      list(size = 4, nudge_x = 0.4, segment.linetype = 4, min.segment.length = 0)
+    } else {
+      list(size = 3, nudge_x = 0.4, segment.linetype = 4, min.segment.length = 0)
+    },
+    point.args = list(
+      position = ggplot2::position_jitterdodge(dodge.width = 0.6),
+      alpha = 0.4,
+      size = if (use_figure2_format) 3.5 else 3,
+      stroke = 0,
+      na.rm = TRUE
+    ),
+    ggsignif.args = list(
+      textsize = if (use_figure2_format) 4 else 3,
+      tip_length = 0.01,
+      na.rm = TRUE
+    ),
+    ggtheme = ggplot2::theme_classic(
+      base_size = if (use_figure2_format) publication_boxplot_base_size else 11
+    ),
     messages = FALSE
-  ) +
-    ggplot2::theme(
+  )
+
+  if (use_figure2_format) {
+    p_box <- p_box + ggplot2::theme(
+      legend.position = "none",
+      plot.subtitle = ggplot2::element_text(size = 13, lineheight = 0.95),
+      plot.caption = ggplot2::element_text(size = 12),
+      axis.text = ggplot2::element_text(size = 14, color = "#222222"),
+      axis.title = ggplot2::element_text(size = 15),
+      axis.title.y.right = ggplot2::element_text(size = 13)
+    )
+  } else {
+    p_box <- p_box + ggplot2::theme(
       plot.title = ggplot2::element_text(face = "bold"),
       legend.position = "none"
     )
+  }
 
   ggplot2::ggsave(
     filename = file.path(OUTPUT_FIG_DIR, as.character(spec$filename[[1]])),

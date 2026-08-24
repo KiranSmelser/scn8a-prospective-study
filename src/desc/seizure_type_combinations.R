@@ -27,6 +27,7 @@ analysis_end <- analysis_end_date()
 max_sets <- 8L
 max_intersections_to_plot <- 25L
 epilepsia_teal <- "#5698A3"
+publication_base_size <- 16
 
 events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
@@ -174,7 +175,7 @@ upset_bar_plot <- ggplot2::ggplot(
   ggplot2::geom_text(
     ggplot2::aes(label = .data$n_patients),
     vjust = -0.25,
-    size = 3
+    size = 4
   ) +
   ggplot2::scale_y_continuous(
     expand = ggplot2::expansion(mult = c(0, 0.14))
@@ -184,13 +185,15 @@ upset_bar_plot <- ggplot2::ggplot(
     labels = NULL
   ) +
   ggplot2::labs(
-    y = "# of patients",
+    y = "Number of patients",
     x = NULL
   ) +
-  ggplot2::theme_minimal(base_size = 11) +
+  ggplot2::theme_minimal(base_size = publication_base_size) +
   ggplot2::theme(
     panel.grid.major.x = ggplot2::element_blank(),
     panel.grid.minor = ggplot2::element_blank(),
+    axis.text.y = ggplot2::element_text(size = 13, color = "#222222"),
+    axis.title.y = ggplot2::element_text(size = 14),
     axis.text.x = ggplot2::element_blank(),
     axis.title.x = ggplot2::element_blank(),
     axis.ticks.x = ggplot2::element_blank()
@@ -227,12 +230,12 @@ upset_matrix_plot <- ggplot2::ggplot(
     x = NULL,
     y = NULL
   ) +
-  ggplot2::theme_minimal(base_size = 11) +
+  ggplot2::theme_minimal(base_size = publication_base_size) +
   ggplot2::theme(
     panel.grid.major.x = ggplot2::element_blank(),
     panel.grid.minor = ggplot2::element_blank(),
-    axis.text.x = ggplot2::element_text(angle = 90, vjust = 0.5, hjust = 1),
-    plot.title = ggplot2::element_text(face = "bold")
+    axis.text.y = ggplot2::element_text(size = 13, color = "#222222"),
+    axis.text.x = ggplot2::element_text(angle = 90, vjust = 0.5, hjust = 1)
   )
 
 set_total_plot <- ggplot2::ggplot(set_patient_totals) +
@@ -248,7 +251,7 @@ set_total_plot <- ggplot2::ggplot(set_patient_totals) +
   ggplot2::geom_text(
     ggplot2::aes(x = .data$n_patients, y = .data$y_idx, label = .data$n_patients),
     hjust = -0.25,
-    size = 3
+    size = 4
   ) +
   ggplot2::scale_y_continuous(
     breaks = seq_len(n_upset_sets),
@@ -260,13 +263,15 @@ set_total_plot <- ggplot2::ggplot(set_patient_totals) +
     expand = ggplot2::expansion(mult = c(0, 0.18))
   ) +
   ggplot2::labs(
-    x = "# of patients",
+    x = "Number of patients",
     y = NULL
   ) +
-  ggplot2::theme_minimal(base_size = 11) +
+  ggplot2::theme_minimal(base_size = publication_base_size) +
   ggplot2::theme(
     panel.grid.major.y = ggplot2::element_blank(),
     panel.grid.minor = ggplot2::element_blank(),
+    axis.text.x = ggplot2::element_text(size = 13, color = "#222222"),
+    axis.title.x = ggplot2::element_text(size = 14),
     axis.text.y = ggplot2::element_blank(),
     axis.ticks.y = ggplot2::element_blank()
   )
@@ -279,13 +284,7 @@ upset_plot <- patchwork::wrap_plots(
   ncol = 2,
   widths = c(4.2, 1.35),
   heights = c(1.25, 3.1)
-) +
-  patchwork::plot_annotation(
-    title = "Seizure Type Combinations",
-    theme = ggplot2::theme(
-      plot.title = ggplot2::element_text(face = "bold")
-    )
-  )
+)
 
 ggplot2::ggsave(
   filename = file.path(OUTPUT_FIG_DIR, "seizure_type_combinations.pdf"),

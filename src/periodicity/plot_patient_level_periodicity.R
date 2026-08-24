@@ -34,6 +34,11 @@ wrap_variant_label <- function(variant_p, patient_id) {
     "Unknown variant",
     variant_p
   )
+  variant <- dplyr::recode(
+    variant,
+    "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
+      "K1473K + Pro1428_Lys1473del"
+  )
   short_patient_id <- stringr::str_sub(patient_id, 1L, 6L)
   stringr::str_wrap(paste0(variant, " (", short_patient_id, ")"), width = 30)
 }

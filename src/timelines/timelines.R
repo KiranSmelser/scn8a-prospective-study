@@ -17,6 +17,13 @@ timeline_patient_filter <- unique(trimws(unlist(strsplit(
   fixed = TRUE
 ))))
 timeline_patient_filter <- timeline_patient_filter[!is.na(timeline_patient_filter) & timeline_patient_filter != ""]
+timeline_patient_filter_override <- getOption("scn8a.timeline_patient_filter", NULL)
+if (!is.null(timeline_patient_filter_override)) {
+  timeline_patient_filter <- unique(trimws(as.character(timeline_patient_filter_override)))
+  timeline_patient_filter <- timeline_patient_filter[
+    !is.na(timeline_patient_filter) & timeline_patient_filter != ""
+  ]
+}
 
 dir.create("output/figs", recursive = TRUE, showWarnings = FALSE)
 dir.create("output/figs/timelines", recursive = TRUE, showWarnings = FALSE)

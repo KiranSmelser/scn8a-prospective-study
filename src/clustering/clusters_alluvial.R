@@ -108,13 +108,11 @@ p_alluvial <- ggplot2::ggplot(
     name = "Cluster"
   ) +
   ggplot2::labs(
-    title = "Change in Cluster Membership Across Seizure-Types",
     x = NULL,
     y = "Number of Patients"
   ) +
   ggplot2::theme_classic(base_size = 13) +
   ggplot2::theme(
-    plot.title = ggplot2::element_text(face = "plain", hjust = 0, size = 14),
     axis.text.x = ggplot2::element_text(color = "grey25"),
     axis.text.y = ggplot2::element_text(color = "grey25"),
     axis.title.y = ggplot2::element_text(color = "black"),
