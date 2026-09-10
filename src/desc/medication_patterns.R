@@ -75,7 +75,7 @@ load_patient_mutation_lookup <- function(path) {
       mutation = dplyr::recode(
         mutation,
         "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
-          "K1473K + Pro1428_Lys1473del"
+          "c.4419+1A>G"
       ),
       mutation = na_if(mutation, ""),
       mutation = if_else(

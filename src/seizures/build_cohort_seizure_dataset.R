@@ -48,7 +48,7 @@ patient_metadata <- readr::read_csv("data/whatsapp_status.csv", show_col_types =
     patient_name = dplyr::na_if(.data$patient_name, "")
   )
 
-cohort_events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
+cohort_events <- read_events_corrected() %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::mutate(patient_id = as.character(.data$patient_id)) %>%
   dplyr::filter(.data$patient_id %in% TARGET_PATIENT_IDS) %>%

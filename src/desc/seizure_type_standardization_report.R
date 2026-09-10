@@ -11,7 +11,7 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 analysis_date <- analysis_end_date()
 
-events_raw <- readr::read_csv("data/events.csv", show_col_types = FALSE)
+events_raw <- read_events_corrected()
 
 seizure_events_standardized <- standardize_seizure_events(events_raw) %>%
   dplyr::mutate(

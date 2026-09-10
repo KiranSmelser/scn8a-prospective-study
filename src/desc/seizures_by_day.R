@@ -56,7 +56,7 @@ patient_names <- readr::read_csv("data/whatsapp_status.csv", show_col_types = FA
   dplyr::group_by(.data$patient_id) %>%
   dplyr::summarise(patient_name = dplyr::first(.data$patient_name), .groups = "drop")
 
-seizure_events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
+seizure_events <- read_events_corrected() %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::mutate(
     patient_id = as.character(.data$patient_id),

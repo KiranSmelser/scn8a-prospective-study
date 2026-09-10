@@ -132,7 +132,7 @@ pca_plot_data <- features %>%
     variant_label = dplyr::recode(
       .data$variant_p,
       "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
-        "K1473K + Pro1428_Lys1473del"
+        "c.4419+1A>G"
     )
   )
 
@@ -175,11 +175,11 @@ p_pca <- ggplot2::ggplot(
   )
 
 ggplot2::ggsave(
-  filename = file.path(OUTPUT_FIG_DIR, "pca_scatter.png"),
+  filename = file.path(OUTPUT_FIG_DIR, "pca_scatter.pdf"),
   plot = p_pca,
   width = 8.5,
   height = 6.5,
-  dpi = 300
+  device = grDevices::cairo_pdf
 )
 
 boxplot_data <- features %>%
@@ -215,10 +215,10 @@ boxplot_data <- boxplot_data %>%
 
 feature_plot_specs <- tibble::tribble(
   ~feature_name, ~plot_label, ~y_label, ~filename,
-  "mean_monthly_seizure_rate", "Mean Monthly Seizure Rate", "Mean seizures per month", "boxplot_mean_seizure_rate.png",
-  "iqr_monthly_seizure_rate", "IQR of Monthly Seizure Rate", "IQR of seizures per month", "boxplot_iqr.png",
-  "proportion_zero_seizure_months", "Proportion of Zero-Seizure Months", "Proportion of months with zero seizures", "boxplot_zero_seizure_months.png",
-  "mean_interseizure_interval_days", "Time Between Seizures", "Mean days between seizures", "boxplot_mean_seizure_gaps.png"
+  "mean_monthly_seizure_rate", "Mean Monthly Seizure Rate", "Mean seizures per month", "boxplot_mean_seizure_rate.pdf",
+  "iqr_monthly_seizure_rate", "IQR of Monthly Seizure Rate", "IQR of seizures per month", "boxplot_iqr.pdf",
+  "proportion_zero_seizure_months", "Proportion of Zero-Seizure Months", "Proportion of months with zero seizures", "boxplot_zero_seizure_months.pdf",
+  "mean_interseizure_interval_days", "Time Between Seizures", "Mean days between seizures", "boxplot_mean_seizure_gaps.pdf"
 )
 
 for (i in seq_len(nrow(feature_plot_specs))) {
@@ -296,6 +296,6 @@ for (i in seq_len(nrow(feature_plot_specs))) {
     plot = p_box,
     width = 8,
     height = 6.5,
-    dpi = 300
+    device = grDevices::cairo_pdf
   )
 }

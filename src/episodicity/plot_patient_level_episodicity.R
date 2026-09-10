@@ -52,7 +52,7 @@ wrap_variant_label <- function(variant_p, patient_id) {
   variant <- dplyr::recode(
     variant,
     "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
-      "K1473K + Pro1428_Lys1473del"
+      "c.4419+1A>G"
   )
   stringr::str_wrap(variant, width = 28)
 }

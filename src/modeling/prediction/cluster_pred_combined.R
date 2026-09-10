@@ -53,12 +53,10 @@ SEIZURE_MODEL_FEATURES <- c(
 
 TARGETED_REGISTRY_SOURCE_COLUMNS <- c(
   "age_seizure_onset_months",
-  "initial_tonic",
-  "initial_tonic_clonic_grand_mal",
-  "seizure_type_tonic",
   "seizure_type_tonic_clonic_grand_mal",
   "seizure_type_focal_aware_simple_partial_seizure",
   "seizure_type_focal_impaired_awareness_complex_partial_seizure_limbic_psychomotor",
+  "dev_skill_sit_unsupported",
   "dev_skill_brush_teeth_with_no_help",
   "dev_skill_name_colors",
   "dev_skill_wash_and_dry_hands",
@@ -69,11 +67,11 @@ TARGETED_REGISTRY_SOURCE_COLUMNS <- c(
 
 REGISTRY_MODEL_FEATURES <- c(
   "registry_tonic_clonic_history",
-  "registry_tonic_history",
   "registry_focal_aware_or_impaired",
   "registry_log1p_age_seizure_onset_months",
-  "registry_age_seizure_onset_missing",
-  "registry_higher_dev_language_adl_score"
+  "registry_higher_dev_language_adl_score",
+  "registry_dev_sit_unsupported",
+  "registry_dev_name_colors"
 )
 
 dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
@@ -301,17 +299,11 @@ prepare_targeted_registry_features <- function(registry) {
     transmute(
       patient_id = as.character(.data$patient_id),
       registry_tonic_clonic_history = suppressWarnings(as.numeric(.data$seizure_type_tonic_clonic_grand_mal)),
-      registry_tonic_history = row_max_binary(
-        .data$initial_tonic,
-        .data$seizure_type_tonic,
-        .data$initial_tonic_clonic_grand_mal
-      ),
       registry_focal_aware_or_impaired = row_max_binary(
         .data$seizure_type_focal_aware_simple_partial_seizure,
         .data$seizure_type_focal_impaired_awareness_complex_partial_seizure_limbic_psychomotor
       ),
       registry_log1p_age_seizure_onset_months = log1p(onset_months_imputed),
-      registry_age_seizure_onset_missing = as.numeric(!is.finite(onset_months)),
       registry_higher_dev_language_adl_score = row_mean_score(
         .data$dev_skill_brush_teeth_with_no_help,
         .data$dev_skill_name_colors,
@@ -319,7 +311,9 @@ prepare_targeted_registry_features <- function(registry) {
         .data$dev_skill_used_a_2_word_combination,
         .data$dev_skill_spoken_in_phrases,
         .data$dev_skill_read
-      )
+      ),
+      registry_dev_sit_unsupported = suppressWarnings(as.numeric(.data$dev_skill_sit_unsupported)),
+      registry_dev_name_colors = suppressWarnings(as.numeric(.data$dev_skill_name_colors))
     ) %>%
     filter(!is.na(.data$patient_id)) %>%
     mutate(
@@ -367,9 +361,7 @@ feature_map <- bind_rows(
     feature_source = "targeted_registry",
     source_column = c(
       "seizure_type_tonic_clonic_grand_mal",
-      "initial_tonic|seizure_type_tonic|initial_tonic_clonic_grand_mal",
       "seizure_type_focal_aware_simple_partial_seizure|seizure_type_focal_impaired_awareness_complex_partial_seizure_limbic_psychomotor",
-      "age_seizure_onset_months",
       "age_seizure_onset_months",
       paste(
         c(
@@ -381,7 +373,9 @@ feature_map <- bind_rows(
           "dev_skill_read"
         ),
         collapse = "|"
-      )
+      ),
+      "dev_skill_sit_unsupported",
+      "dev_skill_name_colors"
     )
   )
 )

@@ -22,23 +22,6 @@ if (!file.exists(CLUSTER_ASSIGNMENTS_INPUT_PATH)) {
 
 corrected_surveys <- read_prospective_surveys_corrected()
 
-survey_lookup_on_or_before_cutoff <- corrected_surveys %>%
-  dplyr::mutate(
-    patient_id = as.character(.data$patient_id),
-    survey_instance_id = as.character(.data$survey_instance_id),
-    survey_date = as.Date(suppressWarnings(lubridate::ymd_hms(.data$prospective_study_timestamp_utc, quiet = TRUE, tz = "UTC"))),
-    survey_date = dplyr::coalesce(
-      .data$survey_date,
-      as.Date(suppressWarnings(lubridate::mdy_hm(.data$prospective_study_timestamp, quiet = TRUE, tz = "UTC")))
-    )
-  ) %>%
-  dplyr::filter(
-    .data$patient_id %in% TARGET_PATIENT_IDS,
-    !is.na(.data$survey_date),
-    .data$survey_date <= ANALYSIS_CUTOFF_DATE
-  ) %>%
-  dplyr::distinct(.data$survey_instance_id, .data$patient_id)
-
 cluster_assignments <- readr::read_csv(CLUSTER_ASSIGNMENTS_INPUT_PATH, show_col_types = FALSE) %>%
   dplyr::transmute(
     patient_id = as.character(.data$patient_id),
@@ -86,18 +69,18 @@ if (length(missing_registry_columns) > 0) {
   )
 }
 
-prospective_milestones_raw <- read_prospective_child_records_corrected(
-  "data/prospective_development_milestones.csv",
-  corrected_surveys
-) %>%
-  dplyr::mutate(survey_instance_id = as.character(.data$survey_instance_id)) %>%
-  dplyr::inner_join(survey_lookup_on_or_before_cutoff, by = "survey_instance_id") %>%
+prospective_milestones_raw <- read_development_milestones_corrected(corrected_surveys) %>%
+  dplyr::filter(
+    .data$patient_id %in% TARGET_PATIENT_IDS,
+    !is.na(.data$event_date),
+    .data$event_date <= ANALYSIS_CUTOFF_DATE
+  ) %>%
   dplyr::transmute(
     patient_id = as.character(.data$patient_id),
     milestone = as.character(.data$milestone),
     status_numeric = suppressWarnings(as.numeric(.data$status)),
     achieved = .data$status_numeric %in% c(2, 3, 5),
-    data_source = "Prospective survey"
+    data_source = as.character(.data$data_source)
   )
 
 registry_milestones_raw <- registry %>%

@@ -7,11 +7,12 @@ suppressPackageStartupMessages({
 })
 
 source("src/analysis_config.R")
+source("src/data_corrections.R")
 
 analysis_end <- analysis_end_date()
 analysis_month_cap <- if (is.na(analysis_end)) NA else floor_date(analysis_end, "month")
 
-events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
+events <- read_events_corrected() %>%
   dplyr::filter(tolower(.data$type) == "seizure") %>%
   dplyr::mutate(
     date_time = lubridate::ymd_hms(.data$date, quiet = TRUE, tz = "UTC"),

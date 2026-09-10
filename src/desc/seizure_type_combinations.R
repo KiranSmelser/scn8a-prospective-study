@@ -29,7 +29,7 @@ max_intersections_to_plot <- 25L
 epilepsia_teal <- "#5698A3"
 publication_base_size <- 16
 
-events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
+events <- read_events_corrected() %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::filter(
     .data$patient_id %in% TARGET_PATIENT_IDS,

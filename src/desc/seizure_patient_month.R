@@ -34,7 +34,7 @@ SEIZURE_TYPE_COLORS <- c(
   "Other" = "#B0B0B0"
 )
 
-all_seizure_events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
+all_seizure_events <- read_events_corrected() %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::filter(
     .data$patient_id %in% TARGET_PATIENT_IDS,
@@ -215,6 +215,11 @@ patient_label_lookup <- tibble::tibble(patient_id = patient_order) %>%
   dplyr::mutate(
     patient_name = dplyr::coalesce(.data$patient_name, .data$patient_id),
     variant = dplyr::coalesce(.data$variant, "Unknown"),
+    variant = dplyr::recode(
+      .data$variant,
+      "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
+        "c.4419+1A>G"
+    ),
     patient_label = paste0(.data$patient_name, " (", .data$variant, ")")
   ) %>%
   dplyr::select(patient_id, patient_label)

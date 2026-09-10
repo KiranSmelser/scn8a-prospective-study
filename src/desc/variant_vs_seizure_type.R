@@ -18,7 +18,7 @@ if (file.exists(png_output_path)) {
 
 analysis_end <- analysis_end_date()
 
-events <- readr::read_csv("data/events.csv", show_col_types = FALSE) %>%
+events <- read_events_corrected() %>%
   standardize_seizure_events(filter_to_seizure = TRUE) %>%
   dplyr::filter(
     .data$patient_id %in% TARGET_PATIENT_IDS,
@@ -82,7 +82,14 @@ if (nrow(events_with_variant) == 0) {
 variant_patient_counts <- events_with_variant %>%
   dplyr::distinct(.data$patient_id, .data$variant) %>%
   dplyr::count(.data$variant, name = "n_unique_patients") %>%
-  dplyr::mutate(variant_label = paste0(.data$variant, "\n(n=", .data$n_unique_patients, ")"))
+  dplyr::mutate(
+    variant_label = dplyr::recode(
+      .data$variant,
+      "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
+        "c.4419+1A>G"
+    ),
+    variant_label = paste0(.data$variant_label, "\n(n=", .data$n_unique_patients, ")")
+  )
 
 base_counts <- events_with_variant %>%
   dplyr::count(.data$variant, .data$seizure_type_plot, name = "n_events")

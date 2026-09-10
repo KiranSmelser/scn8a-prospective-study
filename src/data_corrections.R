@@ -16,6 +16,8 @@ MEDICATION_ADDITIONS_PATH <- file.path(MANUAL_CORRECTION_DIR, "medication_additi
 MEDICATION_EXCLUSIONS_PATH <- file.path(MANUAL_CORRECTION_DIR, "medication_exclusions.csv")
 MEDICATION_INTERVAL_CORRECTIONS_PATH <- file.path(MANUAL_CORRECTION_DIR, "medication_interval_corrections.csv")
 PROSPECTIVE_SURVEY_SELECTIONS_PATH <- file.path(MANUAL_CORRECTION_DIR, "prospective_survey_selections.csv")
+DEVELOPMENT_MILESTONE_ADDITIONS_PATH <- file.path(MANUAL_CORRECTION_DIR, "development_milestone_additions.csv")
+SEIZURE_DAILY_COUNT_REPLACEMENTS_PATH <- file.path(MANUAL_CORRECTION_DIR, "seizure_daily_count_replacements.csv")
 
 MICHAEL_SPIEGEL_PATIENT_ID <- "6723f6b40f7cf300409a6197"
 
@@ -112,6 +114,129 @@ read_optional_csv <- function(path) {
   }
 
   readr::read_csv(path, show_col_types = FALSE)
+}
+
+read_seizure_daily_count_replacements <- function(
+  path = SEIZURE_DAILY_COUNT_REPLACEMENTS_PATH
+) {
+  replacements <- read_optional_csv(path)
+
+  if (nrow(replacements) == 0) {
+    return(tibble::tibble(
+      patient_id = character(),
+      event_date = as.Date(character()),
+      seizure_type = character(),
+      count = integer(),
+      source_seizure_type = character()
+    ))
+  }
+
+  required_columns <- c(
+    "patient_id", "event_date", "seizure_type", "count", "source_seizure_type"
+  )
+  missing_columns <- setdiff(required_columns, names(replacements))
+  if (length(missing_columns) > 0) {
+    stop(
+      "Seizure daily count replacements are missing required column(s): ",
+      paste(missing_columns, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  replacements <- replacements %>%
+    dplyr::transmute(
+      patient_id = stringr::str_squish(as.character(.data$patient_id)),
+      event_date = parse_corrected_date(.data$event_date),
+      seizure_type = stringr::str_squish(as.character(.data$seizure_type)),
+      count = suppressWarnings(as.integer(.data$count)),
+      source_seizure_type = stringr::str_squish(as.character(.data$source_seizure_type))
+    )
+
+  invalid <- replacements %>%
+    dplyr::filter(
+      is.na(.data$patient_id) | .data$patient_id == "" |
+        is.na(.data$event_date) |
+        is.na(.data$seizure_type) | .data$seizure_type == "" |
+        is.na(.data$count) | .data$count < 0 |
+        is.na(.data$source_seizure_type) | .data$source_seizure_type == ""
+    )
+  if (nrow(invalid) > 0) {
+    stop("Seizure daily count replacements contain invalid values.", call. = FALSE)
+  }
+
+  duplicate_keys <- replacements %>%
+    dplyr::count(.data$patient_id, .data$event_date, .data$seizure_type) %>%
+    dplyr::filter(.data$n > 1)
+  if (nrow(duplicate_keys) > 0) {
+    stop("Seizure daily count replacements contain duplicate patient/date/type rows.", call. = FALSE)
+  }
+
+  replacements
+}
+
+read_events_corrected <- function(
+  events_path = "data/events.csv",
+  replacements_path = SEIZURE_DAILY_COUNT_REPLACEMENTS_PATH
+) {
+  events <- readr::read_csv(events_path, show_col_types = FALSE) %>%
+    dplyr::mutate(
+      event_id = as.character(.data$event_id),
+      patient_id = as.character(.data$patient_id)
+    )
+  replacements <- read_seizure_daily_count_replacements(replacements_path)
+
+  if (nrow(replacements) == 0) {
+    return(events)
+  }
+
+  replacement_keys <- replacements %>%
+    dplyr::transmute(
+      patient_id = .data$patient_id,
+      event_date = .data$event_date,
+      source_seizure_type_key = stringr::str_to_lower(.data$source_seizure_type)
+    ) %>%
+    dplyr::distinct()
+
+  retained_events <- events %>%
+    dplyr::mutate(
+      event_date = parse_corrected_date(.data$date),
+      source_seizure_type_key = stringr::str_to_lower(
+        stringr::str_squish(as.character(.data$seizure_type))
+      ),
+      event_type_key = stringr::str_to_lower(stringr::str_squish(as.character(.data$type)))
+    ) %>%
+    dplyr::left_join(
+      replacement_keys %>% dplyr::mutate(replace_source_event = TRUE),
+      by = c("patient_id", "event_date", "source_seizure_type_key")
+    ) %>%
+    dplyr::filter(!(.data$event_type_key == "seizure" & dplyr::coalesce(.data$replace_source_event, FALSE))) %>%
+    dplyr::select(-"event_date", -"source_seizure_type_key", -"event_type_key", -"replace_source_event")
+
+  added_events <- replacements %>%
+    dplyr::filter(.data$count > 0) %>%
+    tidyr::uncount(.data$count, .id = "event_number") %>%
+    dplyr::transmute(
+      event_id = paste0(
+        "manual_", .data$patient_id, "_",
+        format(.data$event_date, "%Y%m%d"), "_",
+        stringr::str_pad(.data$event_number, width = 3, pad = "0")
+      ),
+      patient_id = .data$patient_id,
+      type = "seizure",
+      date = parse_corrected_datetime(
+        paste0(format(.data$event_date, "%Y-%m-%d"), "T12:00:00.000Z")
+      ),
+      seizure_type = .data$seizure_type,
+      createdAt = parse_corrected_datetime(
+        paste0(format(.data$event_date, "%Y-%m-%d"), "T12:00:00.000Z")
+      ),
+      updatedAt = parse_corrected_datetime(
+        paste0(format(.data$event_date, "%Y-%m-%d"), "T12:00:00.000Z")
+      )
+    )
+
+  bind_to_template(retained_events, added_events) %>%
+    dplyr::distinct(.data$event_id, .keep_all = TRUE)
 }
 
 read_prospective_survey_selections <- function(path = PROSPECTIVE_SURVEY_SELECTIONS_PATH) {
@@ -240,6 +365,90 @@ read_prospective_child_records_corrected <- function(path, surveys) {
         dplyr::transmute(survey_instance_id = as.character(.data$survey_instance_id)) %>%
         dplyr::distinct(),
       by = "survey_instance_id"
+    )
+}
+
+read_development_milestones_corrected <- function(
+  surveys = read_prospective_surveys_corrected(),
+  milestones_path = "data/prospective_development_milestones.csv",
+  additions_path = DEVELOPMENT_MILESTONE_ADDITIONS_PATH
+) {
+  survey_lookup <- surveys %>%
+    dplyr::transmute(
+      survey_instance_id = as.character(.data$survey_instance_id),
+      patient_id = as.character(.data$patient_id),
+      event_date = as.Date(suppressWarnings(lubridate::ymd_hms(
+        .data$prospective_study_timestamp_utc,
+        quiet = TRUE,
+        tz = "UTC"
+      ))),
+      event_date = dplyr::coalesce(
+        .data$event_date,
+        as.Date(suppressWarnings(lubridate::mdy_hm(
+          .data$prospective_study_timestamp,
+          quiet = TRUE,
+          tz = "UTC"
+        )))
+      )
+    ) %>%
+    dplyr::distinct(.data$survey_instance_id, .keep_all = TRUE)
+
+  prospective_records <- read_prospective_child_records_corrected(
+    milestones_path,
+    surveys
+  ) %>%
+    dplyr::mutate(survey_instance_id = as.character(.data$survey_instance_id)) %>%
+    dplyr::inner_join(survey_lookup, by = "survey_instance_id") %>%
+    dplyr::transmute(
+      survey_instance_id = .data$survey_instance_id,
+      patient_id = .data$patient_id,
+      milestone = as.character(.data$milestone),
+      status = suppressWarnings(as.numeric(.data$status)),
+      event_date = .data$event_date,
+      data_source = "Prospective survey"
+    )
+
+  additions <- read_optional_csv(additions_path)
+  if (nrow(additions) == 0) {
+    return(prospective_records)
+  }
+
+  required_columns <- c("patient_id", "milestone", "status", "event_date")
+  missing_columns <- setdiff(required_columns, names(additions))
+  if (length(missing_columns) > 0) {
+    stop(
+      "Development milestone additions are missing required column(s): ",
+      paste(missing_columns, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  manual_records <- additions %>%
+    dplyr::transmute(
+      survey_instance_id = NA_character_,
+      patient_id = stringr::str_squish(as.character(.data$patient_id)),
+      milestone = stringr::str_squish(as.character(.data$milestone)),
+      status = suppressWarnings(as.numeric(.data$status)),
+      event_date = suppressWarnings(lubridate::ymd(.data$event_date)),
+      data_source = "Manual correction"
+    ) %>%
+    dplyr::filter(
+      !is.na(.data$patient_id),
+      .data$patient_id != "",
+      !is.na(.data$milestone),
+      .data$milestone != "",
+      !is.na(.data$status),
+      !is.na(.data$event_date)
+    )
+
+  dplyr::bind_rows(prospective_records, manual_records) %>%
+    dplyr::distinct(
+      .data$patient_id,
+      .data$milestone,
+      .data$status,
+      .data$event_date,
+      .data$data_source,
+      .keep_all = TRUE
     )
 }
 
@@ -449,10 +658,45 @@ apply_interval_truncations <- function(intervals, corrections) {
   result
 }
 
+apply_interval_replacements <- function(intervals, corrections) {
+  replacement_targets <- corrections %>%
+    dplyr::filter(.data$operation == "replace_interval") %>%
+    dplyr::distinct(.data$patient_id, .data$medication_id, .data$name_standardized)
+
+  if (nrow(replacement_targets) == 0) {
+    return(intervals)
+  }
+
+  result <- intervals
+
+  for (i in seq_len(nrow(replacement_targets))) {
+    target <- replacement_targets[i, ]
+    target_patient_id <- target$patient_id
+    target_medication_id <- target$medication_id
+    target_name <- target$name_standardized
+
+    result <- result %>%
+      dplyr::filter(
+        !(
+          .data$patient_id == target_patient_id &
+            (
+              (!is.na(target_medication_id) & target_medication_id != "" & .data$medication_id == target_medication_id) |
+                (!is.na(target_name) & target_name != "" & .data$name_standardized == target_name)
+            )
+        )
+      )
+  }
+
+  result
+}
+
 build_added_intervals <- function(corrections, medication_lookup) {
   additions <- corrections %>%
-    dplyr::filter(.data$operation == "add_interval", !is.na(.data$start_date)) %>%
-    dplyr::select("patient_id", "medication_id", "name_standardized", "start_date", "end_date")
+    dplyr::filter(
+      .data$operation %in% c("add_interval", "replace_interval"),
+      !is.na(.data$start_date)
+    ) %>%
+    dplyr::select("patient_id", "medication_id", "name_standardized", "operation", "start_date", "end_date")
 
   if (nrow(additions) == 0) {
     return(tibble::tibble(
@@ -473,7 +717,11 @@ build_added_intervals <- function(corrections, medication_lookup) {
     ) %>%
     dplyr::mutate(
       name_standardized = dplyr::coalesce(.data$name_standardized, .data$medication_lookup_name),
-      interval_source = "manual_correction"
+      interval_source = dplyr::if_else(
+        .data$operation == "replace_interval",
+        "manual_replacement",
+        "manual_correction"
+      )
     ) %>%
     dplyr::select("patient_id", "medication_id", "start_date", "end_date", "interval_source", "name_standardized")
 }
@@ -519,7 +767,8 @@ read_medication_intervals_corrected <- function(
       medication_lookup %>%
         dplyr::select("patient_id", "medication_id", "name_standardized"),
       by = c("patient_id", "medication_id")
-    )
+    ) %>%
+    apply_interval_replacements(corrections)
 
   added_intervals <- build_added_intervals(corrections, medication_lookup)
 

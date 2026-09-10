@@ -7,3 +7,17 @@ patient_id,medication_id,name_standardized,operation,start_date,end_date
 67d0c5202099f5b1ffcbbbc9,manual_67d0c5202099f5b1ffcbbbc9_lacosamide,Lacosamide,add_interval,2025-03-11,
 67d0c5202099f5b1ffcbbbc9,manual_67d0c5202099f5b1ffcbbbc9_phenytoin,Phenytoin,add_interval,2025-03-11,
 67d0c5202099f5b1ffcbbbc9,manual_67d0c5202099f5b1ffcbbbc9_clonazepam,Clonazepam,add_interval,2025-03-11,
+67fd6a03773a9ee7d191cbea,68d59090b783c7baf7292663,Cenobamate,add_interval,2025-10-10,2025-12-07
+5dcb3f4d559dc95b43af4872,9f9065e881673b1f83d86dbf,Phenobarbital,replace_interval,2023-08-17,2026-01-20
+5dcb3f4d559dc95b43af4872,712128aa0b698e275a782193,Levetiracetam,replace_interval,2023-08-29,2024-01-07
+5dcb3f4d559dc95b43af4872,4a287ad085626b6869cad2fe,Valproic Acid,replace_interval,2023-09-13,2023-10-28
+5dcb3f4d559dc95b43af4872,4a287ad085626b6869cad2fe,Valproic Acid,replace_interval,2023-12-14,2024-08-10
+5dcb3f4d559dc95b43af4872,dac88b1d6d243f951bdbdaf3,Oxcarbazepine,replace_interval,2023-10-20,2023-12-12
+5dcb3f4d559dc95b43af4872,dac88b1d6d243f951bdbdaf3,Oxcarbazepine,replace_interval,2024-06-21,2026-05-31
+5dcb3f4d559dc95b43af4872,1ab0308d2516b4fc48e25dbe,Clonazepam,replace_interval,2023-11-08,2024-01-04
+5dcb3f4d559dc95b43af4872,3358998a6d47157cbaaddfbd,Phenytoin,replace_interval,2023-12-03,2023-12-12
+5dcb3f4d559dc95b43af4872,3358998a6d47157cbaaddfbd,Phenytoin,replace_interval,2024-06-27,2025-11-15
+5dcb3f4d559dc95b43af4872,ed5327170b2517dc521d9dd2,Carbamazepine,replace_interval,2023-12-29,2024-06-20
+5dcb3f4d559dc95b43af4872,19685fc22634051e2ec2dbd0,Clobazam,replace_interval,2025-02-04,2026-05-31
+5dcb3f4d559dc95b43af4872,manual_5dcb3f4d559dc95b43af4872_lacosamide,Lacosamide,replace_interval,2025-11-16,2026-05-31
+690a3a45b2c2dee67c5423d6,manual_690a3a45b2c2dee67c5423d6_vigabatrin,Vigabatrin,add_interval,2025-12-26,2026-05-31

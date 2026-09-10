@@ -88,10 +88,7 @@ forms <- if (file.exists("data/forms.csv")) {
 med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE)
 medications_raw <- read_medications_corrected()
 surveys <- read_prospective_surveys_corrected()
-milestones_raw <- read_prospective_child_records_corrected(
-  "data/prospective_development_milestones.csv",
-  surveys
-)
+milestones_raw <- read_development_milestones_corrected(surveys)
 whatsapp_status <- readr::read_csv("data/whatsapp_status.csv", show_col_types = FALSE)
 
 patient_variant_lookup <- whatsapp_status %>%
@@ -247,23 +244,8 @@ milestone_labels <- c(
 
 milestone_status_history <- milestones_raw %>%
   mutate(status_numeric = suppressWarnings(as.numeric(.data$status))) %>%
-  left_join(
-    surveys %>%
-      transmute(
-        survey_instance_id = .data$survey_instance_id,
-        patient_id = as.character(.data$patient_id),
-        prospective_study_timestamp_utc = .data$prospective_study_timestamp_utc,
-        prospective_study_timestamp = .data$prospective_study_timestamp
-      ),
-    by = "survey_instance_id"
-  ) %>%
   mutate(
-    event_date = parse_event_date(.data$prospective_study_timestamp_utc),
-    event_date = if_else(
-      is.na(.data$event_date),
-      as.Date(suppressWarnings(mdy_hm(.data$prospective_study_timestamp, tz = "UTC"))),
-      .data$event_date
-    ),
+    event_date = as.Date(.data$event_date),
     milestone_label = recode(.data$milestone, !!!milestone_labels, .default = stringr::str_to_title(stringr::str_replace_all(.data$milestone, "_", " ")))
   ) %>%
   filter(

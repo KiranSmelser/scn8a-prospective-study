@@ -293,10 +293,16 @@ patients <- readr::read_csv("data/patients.csv", show_col_types = FALSE) %>%
   transmute(
     patient_id = as.character(patient_id),
     first_name,
-    last_name
+    last_name,
+    patient_type = as.character(type)
   )
 
-events <- readr::read_csv("data/events.csv", show_col_types = FALSE)
+manual_patient_ids <- patients %>%
+  filter(patient_type == "manual_data") %>%
+  pull(patient_id)
+
+events_raw <- readr::read_csv("data/events.csv", show_col_types = FALSE)
+events <- read_events_corrected()
 medications_raw <- read_medications_corrected()
 medications_for_analysis <- standardize_non_rescue_epilepsy_medications(
   medications_raw,
@@ -315,10 +321,7 @@ form_answers <- if (file.exists("data/form_answers.csv")) {
 }
 med_intakes <- readr::read_csv("data/med_intakes.csv", show_col_types = FALSE)
 surveys <- read_prospective_surveys_corrected()
-milestones_raw <- read_prospective_child_records_corrected(
-  "data/prospective_development_milestones.csv",
-  surveys
-)
+milestones_raw <- read_development_milestones_corrected(surveys)
 app_activity_dates <- jsonlite::fromJSON("data/patient_summary_metrics.json") %>%
   as_tibble() %>%
   transmute(
@@ -435,11 +438,11 @@ prospective_survey_completion <- surveys %>%
 
 app_usage_parts <- list()
 
-if ("date" %in% names(events)) {
+if ("date" %in% names(events_raw)) {
   app_usage_parts <- append(
     app_usage_parts,
     list(
-      events %>%
+      events_raw %>%
         transmute(patient_id, usage_date = parse_event_date(date)) %>%
         filter(!is.na(patient_id), !is.na(usage_date), usage_date <= current_date)
     )
@@ -478,6 +481,7 @@ app_usage_daily <- if (length(app_usage_parts) == 0) {
 } else {
   bind_rows(app_usage_parts) %>%
     distinct(patient_id, usage_date) %>%
+    filter(!patient_id %in% manual_patient_ids) %>%
     mutate(app_actions = 1L)
 }
 
@@ -609,17 +613,8 @@ med_intervals <- med_intervals_raw %>%
 
 milestone_status_history <- milestones_raw %>%
   mutate(status_numeric = suppressWarnings(as.numeric(status))) %>%
-  left_join(
-    surveys %>% select(survey_instance_id, patient_id, prospective_study_timestamp_utc, prospective_study_timestamp),
-    by = "survey_instance_id"
-  ) %>%
   mutate(
-    event_date = parse_event_date(prospective_study_timestamp_utc),
-    event_date = if_else(
-      is.na(event_date),
-      as.Date(suppressWarnings(mdy_hm(prospective_study_timestamp, tz = "UTC"))),
-      event_date
-    ),
+    event_date = as.Date(.data$event_date),
     milestone_label = recode(milestone, !!!milestone_labels, .default = str_to_title(str_replace_all(milestone, "_", " ")))
   ) %>%
   filter(!is.na(patient_id), !is.na(event_date), event_date <= current_date)
@@ -975,6 +970,11 @@ plot_patient_timeline <- function(pt_id) {
     pt_name <- str_trim(paste(pt_info$first_name, pt_info$last_name))
   }
   variant_label <- ifelse(is.na(pt_variant) || pt_variant == "", "Unknown", pt_variant)
+  variant_label <- dplyr::recode(
+    variant_label,
+    "K1473K + Pro1428_Lys1473del [predicted inframe exon skipping]" =
+      "c.4419+1A>G"
+  )
   base_title <- ifelse(is.na(pt_name) || pt_name == "", pt_id, paste0(pt_name, " (", pt_id, ")"))
   title_text <- paste0(base_title, " ", variant_label)
 
