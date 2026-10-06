@@ -82,9 +82,11 @@ periodicity_results <- readr::read_csv(PERIODICITY_INPUT_PATH, show_col_types = 
     variant_p = as.character(.data$variant_p),
     patient_label = wrap_variant_label(.data$variant_p, .data$patient_id),
     patient_status = dplyr::case_when(
-      .data$significant ~ "FDR significant",
-      .data$analysis_status == "ok" ~ "Not significant",
-      TRUE ~ "Not tested"
+      .data$analysis_status != "ok" | is.na(.data$q_value) ~ "NA",
+      .data$q_value < 0.001 ~ "***",
+      .data$q_value < 0.01 ~ "**",
+      .data$q_value < 0.05 ~ "*",
+      TRUE ~ "ns"
     )
   ) %>%
   dplyr::left_join(cluster_lookup, by = "patient_id") %>%
@@ -106,6 +108,11 @@ patient_order <- periodicity_results %>%
     .data$patient_label
   ) %>%
   dplyr::pull(.data$patient_label)
+
+# Retain every participant in the status column, including those without an
+# evaluable autocorrelation series. Their heatmap rows remain blank.
+status_data <- periodicity_results %>%
+  dplyr::mutate(patient_label = factor(.data$patient_label, levels = rev(patient_order)))
 
 heatmap_data <- readr::read_csv(LAG_INPUT_PATH, show_col_types = FALSE) %>%
   dplyr::mutate(
@@ -141,7 +148,8 @@ reference_lags <- reference_lags[
 ]
 
 plot_width <- 12
-plot_height <- max(6, 0.32 * dplyr::n_distinct(heatmap_data$patient_label) + 2.5)
+plot_height <- max(6, 0.32 * nrow(status_data) + 2.5)
+status_column_x <- max(heatmap_data$lag_days, na.rm = TRUE) + 5
 
 p_heatmap <- ggplot2::ggplot(
   heatmap_data,
@@ -157,13 +165,34 @@ p_heatmap <- ggplot2::ggplot(
   ) +
   ggplot2::geom_point(
     data = selected_lags,
-    ggplot2::aes(x = .data$lag_days, y = .data$patient_label),
+    ggplot2::aes(
+      x = .data$lag_days,
+      y = .data$patient_label,
+      shape = "Strongest positive lag\n(not a significance marker)"
+    ),
     inherit.aes = FALSE,
-    shape = 21,
     size = 2.1,
     stroke = 0.65,
     color = "black",
     fill = "white"
+  ) +
+  ggplot2::scale_shape_manual(
+    name = NULL,
+    values = c("Strongest positive lag\n(not a significance marker)" = 21)
+  ) +
+  ggplot2::geom_vline(
+    xintercept = status_column_x - 3,
+    color = "grey60",
+    linewidth = 0.3
+  ) +
+  ggplot2::geom_text(
+    data = status_data,
+    ggplot2::aes(y = .data$patient_label, label = .data$patient_status),
+    x = status_column_x,
+    inherit.aes = FALSE,
+    hjust = 0.5,
+    size = 3.2,
+    color = "black"
   ) +
   ggplot2::scale_fill_gradient2(
     low = "#2166AC",
@@ -174,6 +203,7 @@ p_heatmap <- ggplot2::ggplot(
   ) +
   ggplot2::scale_x_continuous(
     breaks = reference_lags,
+    limits = c(min(heatmap_data$lag_days, na.rm = TRUE) - 0.5, status_column_x + 3),
     expand = c(0, 0)
   ) +
   ggplot2::facet_grid(
@@ -184,7 +214,7 @@ p_heatmap <- ggplot2::ggplot(
   ) +
   ggplot2::labs(
     title = "Patient-Level Seizure Periodicity",
-    x = "Days",
+    x = "Lag (days)",
     y = "Patient"
   ) +
   ggplot2::theme_minimal(base_size = 11) +

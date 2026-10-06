@@ -225,7 +225,6 @@ for (i in seq_len(nrow(feature_plot_specs))) {
   spec <- feature_plot_specs[i, ]
   feature_name <- as.character(spec$feature_name[[1]])
   feature_sym <- rlang::sym(feature_name)
-  use_figure2_format <- feature_name != "iqr_monthly_seizure_rate"
   plot_data <- boxplot_data %>%
     filter(!is.na(.data[[feature_name]]))
 
@@ -244,52 +243,40 @@ for (i in seq_len(nrow(feature_plot_specs))) {
     p.adjust.method = "holm",
     package = "RColorBrewer",
     palette = "Set2",
-    title = if (use_figure2_format) NULL else as.character(spec$plot_label[[1]]),
+    title = NULL,
     xlab = "Cluster",
     ylab = as.character(spec$y_label[[1]]),
-    centrality.point.args = if (use_figure2_format) {
-      list(size = 6, color = "darkred")
-    } else {
-      list(size = 5, color = "darkred")
-    },
-    centrality.label.args = if (use_figure2_format) {
-      list(size = 4, nudge_x = 0.4, segment.linetype = 4, min.segment.length = 0)
-    } else {
-      list(size = 3, nudge_x = 0.4, segment.linetype = 4, min.segment.length = 0)
-    },
+    centrality.point.args = list(size = 6, color = "darkred"),
+    centrality.label.args = list(
+      size = 4,
+      nudge_x = 0.4,
+      segment.linetype = 4,
+      min.segment.length = 0
+    ),
     point.args = list(
       position = ggplot2::position_jitterdodge(dodge.width = 0.6),
       alpha = 0.4,
-      size = if (use_figure2_format) 3.5 else 3,
+      size = 3.5,
       stroke = 0,
       na.rm = TRUE
     ),
     ggsignif.args = list(
-      textsize = if (use_figure2_format) 4 else 3,
+      textsize = 4,
       tip_length = 0.01,
       na.rm = TRUE
     ),
-    ggtheme = ggplot2::theme_classic(
-      base_size = if (use_figure2_format) publication_boxplot_base_size else 11
-    ),
+    ggtheme = ggplot2::theme_classic(base_size = publication_boxplot_base_size),
     messages = FALSE
   )
 
-  if (use_figure2_format) {
-    p_box <- p_box + ggplot2::theme(
-      legend.position = "none",
-      plot.subtitle = ggplot2::element_text(size = 13, lineheight = 0.95),
-      plot.caption = ggplot2::element_text(size = 12),
-      axis.text = ggplot2::element_text(size = 14, color = "#222222"),
-      axis.title = ggplot2::element_text(size = 15),
-      axis.title.y.right = ggplot2::element_text(size = 13)
-    )
-  } else {
-    p_box <- p_box + ggplot2::theme(
-      plot.title = ggplot2::element_text(face = "bold"),
-      legend.position = "none"
-    )
-  }
+  p_box <- p_box + ggplot2::theme(
+    legend.position = "none",
+    plot.subtitle = ggplot2::element_text(size = 13, lineheight = 0.95),
+    plot.caption = ggplot2::element_text(size = 12),
+    axis.text = ggplot2::element_text(size = 14, color = "#222222"),
+    axis.title = ggplot2::element_text(size = 15),
+    axis.title.y.right = ggplot2::element_text(size = 13)
+  )
 
   ggplot2::ggsave(
     filename = file.path(OUTPUT_FIG_DIR, as.character(spec$filename[[1]])),

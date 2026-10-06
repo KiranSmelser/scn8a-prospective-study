@@ -7,3 +7,4 @@ data/*
 !data/manual_corrections/*.csv
 output/
 docs/
+/AGENTS.md
